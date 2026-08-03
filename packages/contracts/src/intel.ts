@@ -59,6 +59,8 @@ export const resolverSchema = z.object({
   fallback: z.literal('annul'), // ambiguity annuls; it never guesses
 });
 
+export type ResolverSpec = z.infer<typeof resolverSchema>;
+
 export const predictionSchema = z.object({
   id: z.uuid(),
   decision_id: z.uuid().nullable(),
