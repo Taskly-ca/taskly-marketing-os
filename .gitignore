@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.turbo/
+coverage/
+*.tsbuildinfo
+.DS_Store
+*.log
+
+# Secrets. This repo is PRIVATE, but never commit real values regardless.
+.env
+.env.*
+!.env.example
+
+# Collector target lists are DATA, not code — and may name real people/companies.
+data/targets/*.local.json

@@ -1,0 +1,40 @@
+# CI is the ONLY source of truth for merge. No bypass for agent PRs.
+# Parallel agents keep each other honest through this file, not through review alone.
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # --frozen-lockfile first: a hand-merged lockfile fails here, by design.
+      - run: pnpm install --frozen-lockfile
+      - name: typecheck
+        run: pnpm typecheck
+      - name: lint (zero warnings)
+        run: pnpm lint --max-warnings=0
+      - name: format check
+        run: pnpm format:check
+      - name: test
+        run: pnpm test
+      - name: build
+        run: pnpm build
+      - name: knip (dead code / unused deps)
+        run: pnpm knip
+      - name: migration order
+        run: pnpm check:migrations
