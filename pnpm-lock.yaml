@@ -50,6 +50,12 @@ importers:
         specifier: ^4.1.12
         version: 4.4.3
 
+  packages/decide:
+    dependencies:
+      '@tmos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/gate: {}
 
   packages/guardrails: {}

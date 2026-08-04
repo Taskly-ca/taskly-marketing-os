@@ -1,0 +1,10 @@
+{
+  // Build excludes tests (they must not emit into dist). Typechecking must NOT:
+  // a type error in a test is a broken proof of correctness, and the tests are
+  // the primary evidence this repo offers. Verified: before this file existed,
+  // `const x: number = 'string'` in a .test.ts passed `pnpm typecheck` cleanly.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["src/**/*.ts"],
+  "exclude": []
+}
