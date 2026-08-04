@@ -24,7 +24,9 @@ describe('canonical URL — the cheapest dedup in the pipeline', () => {
   });
 
   it('does not merge genuinely different pages', () => {
-    expect(canonicalizeUrl('https://example.com/a')).not.toBe(canonicalizeUrl('https://example.com/b'));
+    expect(canonicalizeUrl('https://example.com/a')).not.toBe(
+      canonicalizeUrl('https://example.com/b'),
+    );
     expect(canonicalizeUrl('https://example.com/s?q=x')).not.toBe(
       canonicalizeUrl('https://example.com/s?q=y'),
     );

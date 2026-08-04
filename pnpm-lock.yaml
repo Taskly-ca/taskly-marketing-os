@@ -60,6 +60,15 @@ importers:
         specifier: ^4.1.12
         version: 4.4.3
 
+  packages/world:
+    dependencies:
+      '@tmos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@tmos/gate':
+        specifier: workspace:*
+        version: link:../gate
+
 packages:
 
   '@emnapi/core@1.11.2':

@@ -156,10 +156,7 @@ describe('gsc collector — request shape', () => {
   it('resumes from the previous cursor as the window start', async () => {
     const { fetchText, calls } = stub(res(200, HAPPY));
     await createGscCollector(ENV).collect(ctxWith(fetchText, '2026-07-28'));
-    const payload = JSON.parse(calls[0]!.init?.body ?? '{}') as Record<
-      string,
-      unknown
-    >;
+    const payload = JSON.parse(calls[0]!.init?.body ?? '{}') as Record<string, unknown>;
     expect(payload['startDate']).toBe('2026-07-28');
   });
 

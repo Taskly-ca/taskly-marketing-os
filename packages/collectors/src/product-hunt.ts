@@ -31,7 +31,6 @@ const COLD_START_WINDOW_MS = 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 50;
 const TOPICS_PER_POST = 5;
 
-
 const QUERY = `query TmosRecentPosts($postedAfter: DateTime, $first: Int!) {
   posts(order: NEWEST, postedAfter: $postedAfter, first: $first) {
     edges {

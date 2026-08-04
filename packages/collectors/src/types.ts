@@ -28,12 +28,7 @@ export type CollectResult =
   | { ok: false; reason: CollectFailure; detail: string; retryable: boolean };
 
 export type CollectFailure =
-  | 'network'
-  | 'rate_limited'
-  | 'auth'
-  | 'parse'
-  | 'blocked_by_policy'
-  | 'not_configured';
+  'network' | 'rate_limited' | 'auth' | 'parse' | 'blocked_by_policy' | 'not_configured';
 
 /**
  * Method and body are first-class rather than smuggled.
