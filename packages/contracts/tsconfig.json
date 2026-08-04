@@ -1,5 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "rootDir": "src", "outDir": "dist" },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  // Every other package excludes tests from the BUILD; contracts did not, so
+  // `brain.test.js`/`.d.ts` were emitted into dist — test code shipped as part
+  // of the package's public output. Typechecking still covers them, via
+  // tsconfig.typecheck.json.
+  "exclude": ["src/**/*.test.ts"]
 }

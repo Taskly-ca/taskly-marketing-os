@@ -36,6 +36,12 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(supports-color@7.2.0)(yaml@2.9.0)
 
+  packages/brain:
+    dependencies:
+      '@tmos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/collectors: {}
 
   packages/contracts:
