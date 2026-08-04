@@ -60,6 +60,15 @@ importers:
         specifier: workspace:*
         version: link:../contracts
 
+  packages/reason:
+    dependencies:
+      '@tmos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@tmos/guardrails':
+        specifier: workspace:*
+        version: link:../guardrails
+
   packages/shared:
     dependencies:
       zod:
