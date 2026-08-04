@@ -75,6 +75,15 @@ importers:
         specifier: ^4.1.12
         version: 4.4.3
 
+  packages/surface:
+    dependencies:
+      '@tmos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@tmos/guardrails':
+        specifier: workspace:*
+        version: link:../guardrails
+
   packages/world:
     dependencies:
       '@tmos/contracts':

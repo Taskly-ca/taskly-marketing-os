@@ -8,19 +8,7 @@ import {
   synthesize,
 } from './synthesis.js';
 
-/**
- * The real honesty gate, loaded through a computed specifier.
- *
- * `packages/guardrails/src/index.ts` does not re-export `honesty.js`, and this
- * lane may not edit that file. A static relative import across the package
- * boundary fails typecheck (TS6059, rootDir). This bridge is the only way to
- * exercise the production gate from here — replace it with
- * `import { assertHonest } from '@tmos/guardrails'` the moment that barrel
- * exports honesty. No library code depends on it; only this test does.
- */
-type AssertHonest = (text: string, surface: string) => void;
-const honestySpecifier = ['..', '..', 'guardrails', 'src', 'honesty.js'].join('/');
-const { assertHonest } = (await import(honestySpecifier)) as { assertHonest: AssertHonest };
+import { assertHonest } from '@tmos/guardrails';
 
 const URL_A = 'https://example.com/jiffy';
 const OBSERVED = '2026-08-01T09:00:00Z';
