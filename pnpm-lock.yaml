@@ -36,6 +36,27 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(supports-color@7.2.0)(yaml@2.9.0)
 
+  apps/smoke:
+    dependencies:
+      '@tmos/collectors':
+        specifier: workspace:*
+        version: link:../../packages/collectors
+      '@tmos/gate':
+        specifier: workspace:*
+        version: link:../../packages/gate
+      '@tmos/guardrails':
+        specifier: workspace:*
+        version: link:../../packages/guardrails
+      '@tmos/reason':
+        specifier: workspace:*
+        version: link:../../packages/reason
+      '@tmos/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      '@tmos/surface':
+        specifier: workspace:*
+        version: link:../../packages/surface
+
   packages/brain:
     dependencies:
       '@tmos/contracts':

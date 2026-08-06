@@ -15,7 +15,8 @@
     "format:check": "prettier --check .",
     "knip": "knip",
     "check:migrations": "node scripts/check-migrations.mjs",
-    "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm knip && pnpm check:migrations"
+    "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm knip && pnpm check:migrations",
+    "test:live": "vitest run --config vitest.live.config.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",
