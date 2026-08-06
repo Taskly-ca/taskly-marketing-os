@@ -40,7 +40,10 @@ function envFromTasklyRepo(): { key: string; model: string } {
   const raw = readFileSync('/Users/nishant/Documents/Taskly/.env.local', 'utf8');
   const pick = (name: string): string => {
     const line = raw.split('\n').find((l) => l.startsWith(`${name}=`));
-    return (line ?? '').slice(name.length + 1).replace(/^["']|["']$/g, '').trim();
+    return (line ?? '')
+      .slice(name.length + 1)
+      .replace(/^["']|["']$/g, '')
+      .trim();
   };
   return { key: pick('GROQ_API_KEY'), model: pick('GROQ_MODEL') || 'llama-3.3-70b-versatile' };
 }
@@ -189,7 +192,9 @@ describe('the pipeline, against the real world', () => {
 
       // The budget chokepoint actually accounted for it.
       expect(state.dailyCostCents).toBeGreaterThan(0);
-      console.log(`[4] budget: ${state.dailyCostCents.toFixed(4)}¢ of ${LIMITS.maxDailyCostCents}¢`);
+      console.log(
+        `[4] budget: ${state.dailyCostCents.toFixed(4)}¢ of ${LIMITS.maxDailyCostCents}¢`,
+      );
 
       /* ── 5. L0 on a REAL claim built from a REAL span ───────────────────── */
       const top = candidates[ranked[0]!.i!]!;
@@ -200,7 +205,13 @@ describe('the pipeline, against the real world', () => {
       const honest = assertL0({
         claim: `${top.title ?? 'Untitled'}`,
         evidence: [
-          { signal_id: null, fact_id: null, source_url: url, span, observed_at: new Date().toISOString() },
+          {
+            signal_id: null,
+            fact_id: null,
+            source_url: url,
+            span,
+            observed_at: new Date().toISOString(),
+          },
         ],
         retrievedUrls: retrieved,
       });
@@ -215,7 +226,13 @@ describe('the pipeline, against the real world', () => {
       const fabricated = assertL0({
         claim: `${top.title ?? 'Untitled'} — prices rose 37.4% and $12,999 was spent`,
         evidence: [
-          { signal_id: null, fact_id: null, source_url: url, span, observed_at: new Date().toISOString() },
+          {
+            signal_id: null,
+            fact_id: null,
+            source_url: url,
+            span,
+            observed_at: new Date().toISOString(),
+          },
         ],
         retrievedUrls: retrieved,
       });
@@ -273,19 +290,23 @@ describe('the pipeline, against the real world', () => {
     },
   );
 
-  it('the budget chokepoint refuses when the daily ceiling is exhausted', { timeout: 30_000 }, async () => {
-    const state = createBudgetState();
-    state.dailyCostCents = 999;
-    const r = await callGroq(
-      { model: GROQ_MODEL, messages: [{ role: 'user', content: 'hi' }] },
-      { apiKey: GROQ_KEY, state, limits: LIMITS, runId: RUN },
-    );
-    expect(r.ok).toBe(false);
-    if (!r.ok && r.reason === 'blocked') {
-      console.log(`[budget] refused before the request: ${r.outcome}`);
-      expect(r.outcome).toBe('blocked_daily_cost');
-    }
-  });
+  it(
+    'the budget chokepoint refuses when the daily ceiling is exhausted',
+    { timeout: 30_000 },
+    async () => {
+      const state = createBudgetState();
+      state.dailyCostCents = 999;
+      const r = await callGroq(
+        { model: GROQ_MODEL, messages: [{ role: 'user', content: 'hi' }] },
+        { apiKey: GROQ_KEY, state, limits: LIMITS, runId: RUN },
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok && r.reason === 'blocked') {
+        console.log(`[budget] refused before the request: ${r.outcome}`);
+        expect(r.outcome).toBe('blocked_daily_cost');
+      }
+    },
+  );
 
   it('a bad key fails loudly rather than returning empty', { timeout: 30_000 }, async () => {
     const state = createBudgetState();
@@ -295,7 +316,9 @@ describe('the pipeline, against the real world', () => {
     );
     expect(r.ok).toBe(false);
     if (!r.ok && r.reason === 'http') {
-      console.log(`[auth] bad key → HTTP ${r.status}, spend still accounted: ${r.usage.costCents > 0}`);
+      console.log(
+        `[auth] bad key → HTTP ${r.status}, spend still accounted: ${r.usage.costCents > 0}`,
+      );
       expect(r.status).toBe(401);
     }
   });
