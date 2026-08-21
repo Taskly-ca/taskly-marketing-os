@@ -36,29 +36,51 @@ describe.skipIf(!HAS_DB)('live postgres', () => {
     expect(row.v).toBe(evil);
   });
 
-  it('ROLLBACKs a transaction that throws — the DDL is gone', async () => {
+  // These prove the transaction boundary with DML on a real table, NOT with DDL.
+  // Migration 011 revoked CREATE on schema `public` from everything except the
+  // owner, and the application connects as an unprivileged member of
+  // service_role — so `create table` here fails with "permission denied for
+  // schema public" and proves nothing about COMMIT. Using a real table is also
+  // the more honest test: it runs the path the adapters actually run, RLS
+  // included, rather than a DDL path no production code takes.
+  it('ROLLBACKs a transaction that throws — the row is gone', async () => {
+    const name = `${PROBE}-rollback-${Date.now()}`;
+
     await expect(
       withTx(async (tx) => {
-        await tx.execute(sql`create table tmos_db_live_probe (id int)`);
+        await tx.execute(
+          sql`insert into source (kind, name, tier) values ('probe', ${name}, 'primary')`,
+        );
+        // Visible to its own transaction, before we abort it.
+        const seen = await tx.one<{ n: number }>(
+          sql`select count(*)::int as n from source where name = ${name}`,
+        );
+        expect(seen.n).toBe(1);
         throw new Error('abort');
       }),
     ).rejects.toThrow('abort');
 
-    const row = await db().one<{ t: string | null }>(
-      sql`select to_regclass(${`public.${PROBE}`})::text as t`,
+    const row = await db().one<{ n: number }>(
+      sql`select count(*)::int as n from source where name = ${name}`,
     );
-    expect(row.t).toBeNull();
+    expect(row.n).toBe(0);
   });
 
   it('COMMITs when the body returns — and cleans up after itself', async () => {
+    const name = `${PROBE}-commit-${Date.now()}`;
+
     await withTx(async (tx) => {
-      await tx.execute(sql`create table tmos_db_live_probe (id int)`);
+      await tx.execute(
+        sql`insert into source (kind, name, tier) values ('probe', ${name}, 'primary')`,
+      );
     });
-    const row = await db().one<{ t: string | null }>(
-      sql`select to_regclass(${`public.${PROBE}`})::text as t`,
+
+    const row = await db().one<{ n: number }>(
+      sql`select count(*)::int as n from source where name = ${name}`,
     );
-    expect(row.t).toBe(PROBE);
-    await db().execute(sql`drop table tmos_db_live_probe`);
+    expect(row.n).toBe(1);
+
+    await db().execute(sql`delete from source where name = ${name}`);
   });
 
   it('enforces the statement timeout it configured', async () => {

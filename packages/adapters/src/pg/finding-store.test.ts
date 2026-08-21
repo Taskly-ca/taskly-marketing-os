@@ -30,6 +30,7 @@ import {
   recentFindings,
   rowToFinding,
   supersedeFinding,
+  advisoryLockKey,
 } from './finding-store.js';
 
 const FINDING = '99999999-9999-4999-8999-999999999999';
@@ -143,7 +144,12 @@ describe('put', () => {
     // The order IS the race protection: a candidate read taken before the lock
     // would let two workers both see "no duplicate" and both insert.
     expect(ex.queries[0]?.text).toContain('pg_advisory_xact_lock');
-    expect(ex.queries[0]?.values).toEqual([findingDedupeKey(finding)]);
+    // The HASH crosses the wire, never the key itself. findingDedupeKey joins on
+    // a literal NUL, and Postgres cannot carry U+0000 in a text parameter at all
+    // — it rejects the bind with 22021. Sending the raw key failed every single
+    // put against a real database while passing every test against the fake.
+    expect(ex.queries[0]?.values).toEqual([advisoryLockKey(findingDedupeKey(finding))]);
+    expect(String(ex.queries[0]?.values?.[0])).toMatch(/^-?\d+$/);
     expect(ex.queries[1]?.text).toContain("regexp_replace(lower(f.claim), '[^a-z0-9]', '', 'g')");
     expect(ex.queries[1]?.values).toEqual([claimFold(finding.claim)]);
     expect(ex.queries[2]?.text).toContain('insert into finding as f');

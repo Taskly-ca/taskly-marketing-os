@@ -32,6 +32,8 @@
  * human deliberately minted. What IS re-checked is the SCHEMA — the port's
  * `invalid_finding` result requires it, and the memory store does the same.
  */
+import { createHash } from 'node:crypto';
+
 import { findingSchema, type EvidenceRef, type Finding } from '@tmos/contracts';
 import {
   db,
@@ -230,6 +232,35 @@ async function findDuplicate(finding: Finding, key: string, ex: Executor): Promi
 }
 
 /**
+ * The dedupe key, as a number Postgres will accept.
+ *
+ * `findingDedupeKey` joins the normalised claim to the evidence-document list
+ * with a literal NUL. In JavaScript that is the right separator and the reason
+ * the key is injective: no legitimate claim contains U+0000, so a claim ending
+ * in something that looks like the doc list cannot forge a collision.
+ *
+ * Postgres cannot carry it. A NUL is not representable in `text` at any point —
+ * not stored, not even sent as a parameter — and the server rejects the bind
+ * with 22021 `invalid byte sequence for encoding "UTF8": 0x00`. Passing the key
+ * to `hashtextextended` therefore failed EVERY put, while the in-memory store
+ * was untroubled, which is exactly the shape of divergence this package exists
+ * to catch.
+ *
+ * So the hash is taken here and only a bigint crosses the wire. That is also
+ * the better lock key on its own merits: `hashtextextended` is a Postgres
+ * implementation detail whose value is not guaranteed stable across major
+ * versions, and a lock that silently renumbers on upgrade stops serialising the
+ * writers it was added for.
+ *
+ * Do NOT "fix" the separator upstream — it is load-bearing, and the file it
+ * lives in is the one BSD grep reports as binary for this reason.
+ */
+export function advisoryLockKey(dedupeKey: string): string {
+  // Signed 64-bit, big-endian, from the first 8 bytes of SHA-256.
+  return createHash('sha256').update(dedupeKey, 'utf8').digest().readBigInt64BE(0).toString();
+}
+
+/**
  * `put`, inside a transaction, holding a lock on the dedupe key.
  *
  * THE RACE THIS CLOSES: two workers skim the same article at the same time,
@@ -255,7 +286,7 @@ async function putInTransaction(finding: Finding, ex: Executor): Promise<PutResu
   const key = findingDedupeKey(finding);
 
   await guard('put', () =>
-    ex.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}::text, 0::bigint))`),
+    ex.execute(sql`select pg_advisory_xact_lock(${advisoryLockKey(key)}::bigint)`),
   );
 
   const duplicate = await findDuplicate(finding, key, ex);

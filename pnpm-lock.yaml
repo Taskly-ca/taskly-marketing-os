@@ -83,12 +83,6 @@ importers:
       '@tmos/reason':
         specifier: workspace:*
         version: link:../reason
-      '@tmos/shared':
-        specifier: workspace:*
-        version: link:../shared
-      '@tmos/surface':
-        specifier: workspace:*
-        version: link:../surface
       '@tmos/world':
         specifier: workspace:*
         version: link:../world

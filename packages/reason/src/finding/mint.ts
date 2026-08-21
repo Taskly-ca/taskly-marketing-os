@@ -196,7 +196,7 @@ export interface MintGates {
   retrievedUrls: Iterable<string>;
 }
 
-export type MintResult = { ok: true; finding: Finding } | { ok: false; reasons: RefusalReason[] };
+type MintResult = { ok: true; finding: Finding } | { ok: false; reasons: RefusalReason[] };
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 

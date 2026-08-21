@@ -36,7 +36,7 @@
 import { db, sql, type Executor } from '@tmos/db';
 import type { FactRow, FactStatus, FactStore } from '@tmos/world';
 
-import { AppendOnlyError, EmptyRangeError, NotFoundError, guard } from '../errors.js';
+import { AppendOnlyError, ConstraintError, EmptyRangeError, NotFoundError, guard } from '../errors.js';
 import { boundsOf, evidenceToColumn, factValueToColumns, rowToFact } from './fact-row.js';
 import { isUuid } from './values.js';
 
@@ -84,10 +84,53 @@ const FACT_COLUMNS = sql`
  */
 const FACT_ORDER = sql`order by lower(asserted), fact_id`;
 
+/**
+ * Refuse a degenerate range BEFORE the statement runs.
+ *
+ * Two failures, and the database handles each one badly in a different way.
+ *
+ * INVERTED (`to` < `from`): the range constructor raises 22000, which ABORTS
+ * the caller's transaction. `withTx` has no savepoints, so everything after it
+ * dies with 25P02 and the real diagnosis is lost — the same reason the close
+ * guards are WHERE clauses rather than raises.
+ *
+ * EMPTY (`to` == `from`): far worse, because it SUCCEEDS. Postgres normalises
+ * `tstzrange(T0, T0)` to `empty`, after which `lower()` and `upper()` are both
+ * NULL — so the row is undecodable, and since reads are per-entity it takes
+ * every later read of that ENTITY down with it, not just itself. Migration 009
+ * cannot catch it: its guards are BEFORE UPDATE and BEFORE DELETE, and this is
+ * an INSERT. A `check (not isempty(...))` belongs in a later migration as
+ * defence in depth, but the row is best never written at all.
+ */
+function assertRangeStorable(range: { from: string; to: string | null }, axis: string): void {
+  if (range.to === null) return;
+  const from = new Date(range.from).getTime();
+  const to = new Date(range.to).getTime();
+  if (Number.isNaN(from) || Number.isNaN(to)) {
+    throw new ConstraintError(`insert: ${axis} has an unparseable bound (${range.from}, ${range.to})`);
+  }
+  if (to === from) {
+    throw new EmptyRangeError(
+      `insert: ${axis} would be empty — ${range.from} to ${range.to} contains no instant. ` +
+        'Postgres normalises it to `empty`, whose bounds are both NULL, which makes this row ' +
+        'and every later read of this entity undecodable.',
+    );
+  }
+  if (to < from) {
+    throw new ConstraintError(
+      `insert: ${axis} upper bound ${range.to} precedes its lower bound ${range.from} ` +
+        '(range lower bound must be less than or equal to range upper bound)',
+    );
+  }
+}
+
 export async function insertFact(
   row: Omit<FactRow, 'factId'>,
   ex: Executor = db(),
 ): Promise<FactRow> {
+  assertRangeStorable(row.valid, 'valid');
+  assertRangeStorable(row.asserted, 'asserted');
+
   const value = factValueToColumns(row.value);
   const evidence = JSON.stringify(evidenceToColumn(row.evidence));
 
