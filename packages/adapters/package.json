@@ -1,0 +1,31 @@
+{
+  "name": "@tmos/adapters",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.typecheck.json"
+  },
+  "dependencies": {
+    "@tmos/brain": "workspace:*",
+    "@tmos/collectors": "workspace:*",
+    "@tmos/contracts": "workspace:*",
+    "@tmos/db": "workspace:*",
+    "@tmos/decide": "workspace:*",
+    "@tmos/gate": "workspace:*",
+    "@tmos/intel": "workspace:*",
+    "@tmos/reason": "workspace:*",
+    "@tmos/shared": "workspace:*",
+    "@tmos/surface": "workspace:*",
+    "@tmos/world": "workspace:*"
+  }
+}

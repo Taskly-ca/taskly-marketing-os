@@ -1,0 +1,10 @@
+{
+  // Build excludes tests (they must not emit into dist). Typechecking must NOT:
+  // a type error in a test is a broken proof, and for THIS package the tests are
+  // the only thing standing between a mapping decision and a silent wrong answer
+  // in production — nothing else exercises the SQL until a DATABASE_URL exists.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["src/**/*.ts"],
+  "exclude": []
+}
