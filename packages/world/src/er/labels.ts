@@ -13,6 +13,11 @@
  * Deterministic throughout: no clock, no randomness. `decidedAt` is supplied by
  * the caller precisely so the store never reads the wall clock.
  */
+// The store-failure taxonomy lives with the first fake that needed it. One
+// definition, not two: `export *` from the package index silently DROPS a name
+// exported by two modules, so a second local `ConstraintError` would remove the
+// class from `@tmos/world` altogether rather than collide loudly.
+import { ConstraintError } from '../fact/memory-store.js';
 import { AUTO_MERGE, AUTO_REJECT } from './blocking.js';
 
 export type HumanVerdict = 'match' | 'no_match' | 'unsure';
@@ -54,11 +59,27 @@ export function resetLabelIds(): void {
 
 /** In-memory store. A re-label of the same pair REPLACES the old verdict:
  *  humans correct themselves, and two contradictory rows would silently skew
- *  every precision number computed afterwards. */
+ *  every precision number computed afterwards — which is exactly what 006's
+ *  `er_label_pair_uidx` enforces on disk, and why the Postgres adapter's `add`
+ *  is an `on conflict … do update` rather than a plain insert. */
 export function createMemoryLabelStore(): LabelStore {
   const rows = new Map<string, ErLabel>();
   return {
     async add(label) {
+      // 006's other constraint, `er_label_not_self`. A pair is never a
+      // self-match: that row is always a mistake, and it hands the calibration
+      // set a free true positive — which moves the auto-merge threshold every
+      // precision number here is fitted to. Compared case-insensitively
+      // because these are uuids on disk and Postgres normalizes them to lower
+      // case before the check ever sees them.
+      if (label.leftEntity.toLowerCase() === label.rightEntity.toLowerCase()) {
+        throw new ConstraintError(
+          `add: ${label.leftEntity} labelled against itself — migration 006's er_label_not_self ` +
+            'rejects a self-pair, because it is always a mistake and it inflates precision with ' +
+            'a free true positive.',
+        );
+      }
+
       const key = pairKey(label.leftEntity, label.rightEntity);
       const stored: ErLabel = { ...label, id: rows.get(key)?.id ?? nextId() };
       rows.set(key, stored);

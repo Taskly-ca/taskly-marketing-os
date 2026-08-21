@@ -24,7 +24,7 @@ const URL = 'https://jiffyondemand.com/pricing';
 const OBSERVED_AT = '2026-08-04T00:00:00.000Z';
 const clock = () => '2026-08-04T09:30:00.000Z';
 
-const PIN: PinnedModel = { model: 'anthropic/claude-opus-4', version: '2026-06-01' };
+const PIN: PinnedModel = { model: 'qwen/qwen3.6-27b', version: '2026-06-01' };
 
 class SpyL1 implements L1Port {
   readonly seen: L1Request[] = [];
@@ -52,7 +52,7 @@ const full = (n: number): Record<RubricDimension, number> =>
 const finding = (claim: string, spans: string[] = [claim]): VerifiableFinding => ({
   claim,
   evidence: spans.map((span) => ({ source_url: URL, span, observed_at: OBSERVED_AT })),
-  generated_by: 'agent:groq/llama-3.3-70b@2026-05-01',
+  generated_by: 'agent:openai/gpt-oss-120b@2026-05-01',
 });
 
 /* ── L1 ───────────────────────────────────────────────────────────────────── */

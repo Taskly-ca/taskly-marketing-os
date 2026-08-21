@@ -20,21 +20,54 @@
  * No LLM is used here. Classification is a comparison, corroboration is graph
  * traversal, and the claim text is a template — so T2 costs nothing and cannot
  * hallucinate a difference that is not in the data.
+ *
+ * A FACT THIS TIER CANNOT DIFF IS A REFUSAL, NOT A GAP. `ObservedValue` covers
+ * two of world's four `FactValue` variants, so the adapter that feeds this tier
+ * has facts it cannot convert. The invisible version of that is an integrator
+ * writing `if (!converted) continue` — a whole class of fact that never
+ * produces a Finding and is counted nowhere. So `null` is a legal value here:
+ * hand it straight to `correlate` and get `unsupported_value` back, in the same
+ * failure ledger as every other refusal.
  */
-import { assertCausalLanguage } from '@tmos/guardrails';
 import type { EvidenceRef, Finding } from '@tmos/contracts';
+import { assertHonest } from '@tmos/guardrails';
+import { mintOrThrow } from '../finding/mint.js';
 
 /* ── values and the history port ──────────────────────────────────────────── */
 
-/** A subset of world's `FactValue`. `entity` and `json` are omitted on purpose:
- *  diffing them needs semantics T2 does not have, and a shallow compare would
- *  report a reordered object as a change. */
+/**
+ * A subset of world's `FactValue`. `entity` and `json` are omitted on purpose:
+ * diffing them needs semantics T2 does not have, and a shallow compare would
+ * report a reordered object as a change — which is worse than not comparing,
+ * because it manufactures novelty out of key order.
+ *
+ * The conversion an adapter writes should therefore be
+ * `(f: FactValue) => ObservedValue | null`, returning `null` for `entity` and
+ * `json`. Every field on this tier that takes an observed value accepts that
+ * `null`, so the honest wiring is also the shortest one.
+ */
 export type ObservedValue = { kind: 'num'; num: number } | { kind: 'text'; text: string };
 
 export interface HistoryLookup {
   /** False when the subject is not in the world model at all. */
   entityKnown: boolean;
-  /** Our current best value for this predicate, or null if we hold none. */
+  /**
+   * Our current best value for this predicate, or null if we hold none.
+   *
+   * `{ value: null }` is the third state and it is not the same as either: we
+   * hold something we cannot compare. Reporting that as "we hold none" is the
+   * expensive mistake — it classifies as `changed_value` and writes "we now
+   * hold a value where we previously held none", which is false. Say `null`
+   * and T2 refuses the item instead of inventing the change.
+   */
+  current: { value: ObservedValue | null; observedAt: string } | null;
+}
+
+/** A `HistoryLookup` whose held value, if there is one, T2 can actually
+ *  compare. `correlate` produces one by refusing everything else, which is why
+ *  `classify` never has to decide what an incomparable prior means. */
+export interface ComparableHistory {
+  entityKnown: boolean;
   current: { value: ObservedValue; observedAt: string } | null;
 }
 
@@ -78,7 +111,9 @@ export type HistoryClassification = 'new_entity' | 'changed_value' | 'restated' 
 export interface CorrelateInput {
   subjectRef: string;
   predicate: string;
-  observation: { value: ObservedValue; observedAt: string };
+  /** `value: null` — the source fact is entity- or json-valued and could not be
+   *  converted. Refused as `unsupported_value`, never silently dropped. */
+  observation: { value: ObservedValue | null; observedAt: string };
   /** Provenance, always. A signal with no evidence is refused, not correlated. */
   evidence: readonly EvidenceRef[];
   /** T1's materiality for this item, in [0,1]. */
@@ -115,7 +150,10 @@ export interface T2Verdict {
   labels: { subject: string; predicate: string };
 }
 
-export type T2Failure = 'no_evidence' | 'no_collapse_port' | 'history_unavailable';
+/** `unsupported_value` is a REFUSAL, not an error: the item was well-formed and
+ *  we declined to diff it. It exists so that declining is counted. */
+export type T2Failure =
+  'no_evidence' | 'no_collapse_port' | 'history_unavailable' | 'unsupported_value';
 
 export type T2Result =
   | { ok: true; verdict: T2Verdict }
@@ -213,7 +251,10 @@ const instant = (iso: string): number => new Date(iso).getTime();
  * timestamp gets misfiled, so unparseable timestamps fall to `contradicts` —
  * the outcome that asks for a human rather than the one that asserts a change.
  */
-export function classify(observation: CorrelateInput['observation'], held: HistoryLookup) {
+export function classify(
+  observation: { value: ObservedValue; observedAt: string },
+  held: ComparableHistory,
+) {
   if (!held.entityKnown) return 'new_entity' as const;
   if (held.current === null) return 'changed_value' as const;
   if (norm(observation.value) === norm(held.current.value)) return 'restated' as const;
@@ -234,6 +275,23 @@ export async function correlate(inp: CorrelateInput, deps: T2Deps): Promise<T2Re
       retryable: false,
     };
   }
+
+  // Before any work: a value we cannot diff. Refusing here is the whole point —
+  // it costs one line at the call site and turns an entity- or json-valued fact
+  // from a fact that silently never produced a Finding into a counted skip.
+  const observedValue = inp.observation.value;
+  if (observedValue === null) {
+    return {
+      ok: false,
+      reason: 'unsupported_value',
+      detail:
+        `observed value for ${inp.subjectRef} ${inp.predicate} is not num or text ` +
+        '(entity- or json-valued); T2 has no semantics to diff it and a shallow ' +
+        'compare would report a reordering as a change',
+      retryable: false,
+    };
+  }
+  const observation = { value: observedValue, observedAt: inp.observation.observedAt };
 
   let roots: string[];
   if (inp.corroboration.kind === 'roots') {
@@ -264,7 +322,27 @@ export async function correlate(inp: CorrelateInput, deps: T2Deps): Promise<T2Re
     };
   }
 
-  const classification = classify(inp.observation, held);
+  // Same refusal on the other side of the diff. A prior we cannot compare must
+  // NOT collapse into "we hold none": that classifies as `changed_value` and
+  // writes a so_what asserting we previously held nothing, which is false.
+  let prior: { value: ObservedValue; observedAt: string } | null = null;
+  if (held.current !== null) {
+    const heldValue = held.current.value;
+    if (heldValue === null) {
+      return {
+        ok: false,
+        reason: 'unsupported_value',
+        detail:
+          `we hold a value for ${inp.subjectRef} ${inp.predicate} that T2 cannot ` +
+          'compare (entity- or json-valued), so whether this observation is new is ' +
+          'unknown — refusing rather than reporting it as a change',
+        retryable: false,
+      };
+    }
+    prior = { value: heldValue, observedAt: held.current.observedAt };
+  }
+
+  const classification = classify(observation, { entityKnown: held.entityKnown, current: prior });
   const components = scoreVerdict({
     materiality: inp.materiality,
     classification,
@@ -283,9 +361,9 @@ export async function correlate(inp: CorrelateInput, deps: T2Deps): Promise<T2Re
       predicate: inp.predicate,
       classification,
       stakes: inp.stakes,
-      priorValue: held.current?.value ?? null,
-      observedValue: inp.observation.value,
-      observedAt: inp.observation.observedAt,
+      priorValue: prior?.value ?? null,
+      observedValue: observation.value,
+      observedAt: observation.observedAt,
       independentSources: roots.length,
       roots,
       score,
@@ -352,33 +430,55 @@ export interface AssembleOptions {
    *  Defaults to the T2 rank score, which is a proxy for relevance, not a
    *  measurement of it — do not read it as one. */
   domainScore?: number;
+  /** Honesty surface. 'internal' by default, like synthesis — see `MintGates`. */
+  surface?: string;
 }
 
+/**
+ * A Finding assembled here is a Finding: it is the same type every surface
+ * accepts, and nothing between here and a digest re-runs L0. So it goes through
+ * `mintOrThrow`, the same door `synthesize` uses, and faces the same five
+ * gates rather than the one this function used to run.
+ *
+ * Both prose fields can carry a claim we are not allowed to make even though no
+ * model wrote them: `render()` puts an observed TEXT value verbatim into the
+ * claim — a competitor's own "fully insured, vetted pros" is exactly the kind of
+ * string we scrape — and `opts.soWhat` is caller-written. Fail-closed on both.
+ * The honest way to state what a source says is to quote it; the gate exempts
+ * quoted text for precisely that reason.
+ *
+ * Still synchronous and still pure: the gates are direct imports, `assertHonest`
+ * included, so no caller had to change.
+ */
 export function assembleFinding(verdict: T2Verdict, opts: AssembleOptions): Finding {
   if (verdict.classification === 'restated') {
     throw new Error('refusing to assemble a Finding from a restated signal — we already knew this');
   }
-  const claim = CLAIM[verdict.classification](verdict);
-  const so_what = opts.soWhat ?? defaultSoWhat(verdict);
-  // Rung 0: T2 observes, it never runs a holdout. Fail-closed on both fields,
-  // including a caller-supplied consequence.
-  assertCausalLanguage(`${claim} ${so_what}`, 0);
-
-  return {
-    id: opts.id,
-    claim,
-    so_what,
-    subject_refs: [verdict.subjectRef],
-    evidence: verdict.evidence,
-    basis: 'inferred_from_sources',
-    causal_rung: 0,
-    stakes: verdict.stakes,
-    region: opts.region,
-    domain_score: opts.domainScore ?? verdict.score,
-    generated_by: opts.generatedBy,
-    reviewed_by: null,
-    superseded_by: null,
-    supersede_reason: null,
-    created_at: opts.createdAt,
-  };
+  return mintOrThrow(
+    {
+      id: opts.id,
+      claim: CLAIM[verdict.classification](verdict),
+      so_what: opts.soWhat ?? defaultSoWhat(verdict),
+      subject_refs: [verdict.subjectRef],
+      evidence: verdict.evidence,
+      basis: 'inferred_from_sources',
+      // Rung 0: T2 observes, it never runs a holdout.
+      causal_rung: 0,
+      stakes: verdict.stakes,
+      region: opts.region,
+      domain_score: opts.domainScore ?? verdict.score,
+      generated_by: opts.generatedBy,
+      created_at: opts.createdAt,
+    },
+    {
+      honesty: assertHonest,
+      surface: opts.surface,
+      // At this tier the citations ARE the retrieval set: these spans came off
+      // pages the collector fetched and no model chose a URL. So L0's
+      // url_not_retrieved check is vacuous here by construction, and what it
+      // proves instead is the part that matters — every number and date in the
+      // claim appears verbatim in a span we actually hold.
+      retrievedUrls: verdict.evidence.map((e) => e.source_url),
+    },
+  );
 }

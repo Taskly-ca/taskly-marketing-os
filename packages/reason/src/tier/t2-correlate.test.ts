@@ -20,6 +20,7 @@ import { findingSchema } from '@tmos/contracts';
 import type { EvidenceRef } from '@tmos/contracts';
 
 const PRICING = 'https://jiffyondemand.com/pricing';
+const OBSERVED = '2026-08-04T00:00:00.000Z';
 const uuid = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
 const ev = (span: string, url = PRICING): EvidenceRef => ({
@@ -291,6 +292,55 @@ describe('failure is reported, never guessed', () => {
   });
 });
 
+describe('a fact this tier cannot diff is a recorded skip, never a silent drop', () => {
+  it('records an unconvertible observation instead of it disappearing', async () => {
+    // What an adapter hands over when the source fact is entity- or json-valued
+    // and its `FactValue -> ObservedValue` conversion returns null. The whole
+    // point is that this line compiles: the honest wiring is also the laziest,
+    // so nobody reaches for `if (!v) continue`.
+    const r = await correlate(input({ observation: { value: null, observedAt: OBSERVED } }), {
+      history: history(UNKNOWN),
+      collapse,
+    });
+    expect(r).toMatchObject({ ok: false, reason: 'unsupported_value', retryable: false });
+    if (r.ok) return;
+    expect(r.detail).toContain('price.hourly_rate_cents');
+  });
+
+  it('refuses rather than call an incomparable prior "we held none"', async () => {
+    // The expensive version of this bug: an adapter that cannot convert the
+    // HELD value returns `current: null`, which classifies as changed_value and
+    // writes "we now hold a value where we previously held none" — false, and
+    // it reaches a surface as news.
+    const r = await correlate(input(), {
+      history: history({
+        entityKnown: true,
+        current: { value: null, observedAt: '2026-07-01T00:00:00.000Z' },
+      }),
+      collapse,
+    });
+    expect(r).toMatchObject({ ok: false, reason: 'unsupported_value' });
+    if (r.ok) return;
+    expect(r.detail).toMatch(/we hold a value/);
+  });
+
+  it('refuses before spending the collapse port on an item it will not use', async () => {
+    let collapses = 0;
+    const counting: CollapseCopyChainsPort = (c, e) => {
+      collapses += 1;
+      return collapse(c, e);
+    };
+    await correlate(
+      input({
+        observation: { value: null, observedAt: OBSERVED },
+        corroboration: { kind: 'claims', claims: [{ sourceId: 'a' }], edges: [] },
+      }),
+      { history: history(UNKNOWN), collapse: counting },
+    );
+    expect(collapses).toBe(0);
+  });
+});
+
 describe('a Finding assembled by T2 must survive L0', () => {
   const assemble = (v: T2Verdict) =>
     assembleFinding(v, {
@@ -309,7 +359,7 @@ describe('a Finding assembled by T2 must survive L0', () => {
     );
   });
 
-  it('fails when the number does not, which is the fabrication we care about', async () => {
+  it('REFUSES to assemble when the number does not — the fabrication we care about', async () => {
     const v = await verdictOf(
       {
         observation: { value: { kind: 'num', num: 7000 }, observedAt: '2026-08-04T00:00:00.000Z' },
@@ -317,13 +367,30 @@ describe('a Finding assembled by T2 must survive L0', () => {
       },
       held(4500, '2026-07-01T00:00:00.000Z'),
     );
-    const r = assertL0({
-      claim: assemble(v).claim,
-      evidence: v.evidence,
-      retrievedUrls: [PRICING],
-    });
-    expect(r.ok).toBe(false);
-    expect(r.violations[0]).toMatchObject({ code: 'number_not_in_span', token: '7000' });
+    // It used to be possible to hold this Finding: L0 was a check the caller
+    // could run afterwards. Now L0 runs inside the mint, so the fabrication
+    // never becomes a value anything can put on a feed.
+    expect(() => assemble(v)).toThrow(/number_not_in_span/);
+    expect(() => assemble(v)).toThrow(/7000/);
+  });
+
+  it('REFUSES a scraped value that states a trust claim we may not make', async () => {
+    // Not a hallucination — a real competitor's real marketing copy, rendered
+    // verbatim into the claim by the template. Asserting it in our own voice is
+    // the failure the honesty gate exists to stop, on internal surfaces too.
+    const v = await verdictOf(
+      {
+        predicate: 'positioning.headline',
+        observation: {
+          value: { kind: 'text', text: 'every cleaner we send is insured' },
+          observedAt: '2026-08-04T00:00:00.000Z',
+        },
+        evidence: [ev('Jiffy homepage: every cleaner we send is insured.')],
+        labels: { subject: 'Jiffy', predicate: 'headline' },
+      },
+      UNKNOWN,
+    );
+    expect(() => assemble(v)).toThrow(/honesty gate blocked/);
   });
 
   it('writes at causal rung 0 and never uses causal language', async () => {

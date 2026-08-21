@@ -60,10 +60,68 @@ export function parseGeneratedBy(generatedBy: string): ModelIdentity | null {
 export type IndependenceCheck = { independent: true } | { independent: false; reason: string };
 
 /**
- * Same model ⇒ not independent, **even at a different version**: a later
- * snapshot of the same family shares the training and therefore the blind
- * spots. Anything unparseable ⇒ also not independent, because we cannot prove
- * it is — fail closed.
+ * A model FAMILY: the vendor, plus the base name with the size and version
+ * qualifiers stripped. `openai/gpt-oss-120b` and `openai/gpt-oss-20b` are two
+ * sizes of ONE family; `qwen/qwen3.6-27b` is a different one.
+ *
+ * Groq ids are usually vendor-prefixed (`openai/…`, `qwen/…`, `meta-llama/…`)
+ * and sometimes not — `allam-2-7b` carries no prefix, and neither did any of
+ * the historical Llama ids — so the vendor is optional. An unprefixed id is
+ * vendor UNKNOWN, not vendor NONE: it matches any vendor sharing its stem, so
+ * `llama-3.3-70b-versatile` and `meta-llama/llama-4-scout-17b` read as one
+ * lineage under two naming conventions. Guessing the other way fails OPEN,
+ * which is the one thing this check may not do.
+ */
+export interface ModelFamily {
+  /** Everything before the last `/`, or null when the id carries no prefix. */
+  vendor: string | null;
+  /** The base name: leading words, up to where the qualifiers start. */
+  stem: string;
+}
+
+export function modelFamily(model: string): ModelFamily {
+  const id = model.trim().toLowerCase();
+  const slash = id.lastIndexOf('/');
+  const vendor = slash === -1 ? null : id.slice(0, slash) || null;
+  const rest = id.slice(slash + 1);
+
+  // Keep the leading words and stop at the first token carrying a digit: that
+  // is where the size/version qualifiers begin (`-120b`, `-3.3`, `-v3`), and
+  // those are precisely what separates siblings WITHIN a family.
+  const kept: string[] = [];
+  for (const part of rest.split('-')) {
+    if (!/\d/.test(part)) {
+      kept.push(part);
+      continue;
+    }
+    const head = part.replace(/\d.*$/, '').replace(/v$/, '');
+    if (head.length > 0) kept.push(head);
+    break;
+  }
+  return { vendor, stem: kept.join('-') || rest };
+}
+
+const familyLabel = (f: ModelFamily): string =>
+  f.vendor === null ? f.stem : `${f.vendor}/${f.stem}`;
+
+/** Same stem, and vendors that do not contradict each other. */
+const sameFamily = (a: string, b: string): boolean => {
+  const x = modelFamily(a);
+  const y = modelFamily(b);
+  if (x.stem !== y.stem) return false;
+  return x.vendor === null || y.vendor === null || x.vendor === y.vendor;
+};
+
+/**
+ * Same model ⇒ not independent, **even at a different version**; same FAMILY
+ * ⇒ not independent either, because a later snapshot or a smaller sibling
+ * shares the training and therefore the blind spots. Anything unparseable ⇒
+ * also not independent, because we cannot prove it is — fail closed.
+ *
+ * The family comparison is not a refinement, it is the point: with two sizes of
+ * one family in `MODELS` (`openai/gpt-oss-120b` writing, `openai/gpt-oss-20b`
+ * the tempting cheap verifier), comparing ids alone lets exactly the collision
+ * this guard exists to prevent read as independence.
  */
 export function checkIndependence(verifier: ModelIdentity, generatedBy: string): IndependenceCheck {
   if (/^human:/.test(generatedBy.trim())) return { independent: true };
@@ -75,10 +133,19 @@ export function checkIndependence(verifier: ModelIdentity, generatedBy: string):
       reason: `cannot establish verifier independence: generated_by "${generatedBy}" is not "agent:model@version" or "human:<id>"`,
     };
   }
-  if (writer.model === verifier.model) {
+  if (writer.model.trim().toLowerCase() === verifier.model.trim().toLowerCase()) {
     return {
       independent: false,
       reason: `verifier and writer are the same model (${writer.model}); a model asked to check its own output agrees with itself`,
+    };
+  }
+  if (sameFamily(writer.model, verifier.model)) {
+    return {
+      independent: false,
+      reason:
+        `verifier ${verifier.model} and writer ${writer.model} are the same model family ` +
+        `(${familyLabel(modelFamily(writer.model))}); a sibling shares the training and ` +
+        `therefore the blind spots`,
     };
   }
   return { independent: true };

@@ -179,6 +179,68 @@ describe('promotion needs DISTINCT sources, not raw count', () => {
   });
 });
 
+describe('the occurrence ledger only ever grows, as it does in Postgres', () => {
+  // 007 replaced "seen N times" with a `predicate_occurrence` ledger, and
+  // `predicate_occurrence_sync` recomputes `predicate_def.occurrences` from
+  // `sum(count)` after every write — so the adapter never writes that column at
+  // all. This store used to take both derived fields verbatim, which made two
+  // writes possible here that the database ignores. Both silently move
+  // `evaluatePromotion`'s answer, and only in the fake.
+
+  it('refuses to roll the total backwards when handed a stale definition', async () => {
+    const stale = await store.upsert(def({ occurrences: 5, distinctSources: ['src_a'] }));
+    expect(stale.occurrences).toBe(5);
+
+    // Someone else counted two more sightings; we then write back the copy we
+    // read before they did.
+    await recordOccurrence(store, 'hourly_rate_cents', 'src_a');
+    await recordOccurrence(store, 'hourly_rate_cents', 'src_a');
+    const written = await store.upsert(stale);
+
+    expect(written.occurrences).toBe(7);
+    expect((await store.get('hourly_rate_cents'))?.occurrences).toBe(7);
+  });
+
+  it('refuses to un-see a source that is already in the ledger', async () => {
+    await store.upsert(def({ occurrences: 2, distinctSources: ['src_a', 'src_b'] }));
+    const written = await store.upsert(def({ occurrences: 2, distinctSources: ['src_a'] }));
+
+    expect(written.distinctSources).toEqual(['src_a', 'src_b']);
+    expect(evaluatePromotion({ ...written, status: 'proposed', occurrences: 3 }).eligible).toBe(
+      true,
+    );
+  });
+
+  it('counts a NEW source as a sighting even when the caller asked for no increase', async () => {
+    // `reconcileOccurrences` writes a ledger row worth 1 for every source it has
+    // not seen, whatever the requested delta was, so the total moves anyway.
+    await store.upsert(def({ occurrences: 1, distinctSources: ['src_a'] }));
+    const written = await store.upsert(def({ occurrences: 1, distinctSources: ['src_a', 'src_b'] }));
+
+    expect(written.occurrences).toBe(2);
+    expect(written.distinctSources).toEqual(['src_a', 'src_b']);
+  });
+
+  it('still lets the definition itself be rewritten in place', async () => {
+    await store.upsert(def({ predicate: 'rate_cents' })); // the replacement, first
+    await store.upsert(def({ occurrences: 3, distinctSources: ['src_a', 'src_b'] }));
+    const rewritten = await store.upsert(
+      def({
+        occurrences: 3,
+        distinctSources: ['src_a', 'src_b'],
+        description: 'Rewritten.',
+        status: 'deprecated',
+        supersededBy: 'rate_cents',
+      }),
+    );
+
+    expect(rewritten.description).toBe('Rewritten.');
+    expect(rewritten.status).toBe('deprecated');
+    expect(rewritten.supersededBy).toBe('rate_cents');
+    expect(rewritten.occurrences).toBe(3);
+  });
+});
+
 describe('resolveAlias', () => {
   it('resolves an exact name and an alias to the same canonical row', async () => {
     await store.upsert(def({ aliases: ['hourly_rate', 'rate_per_hour'] }));
@@ -189,10 +251,13 @@ describe('resolveAlias', () => {
   });
 
   it('follows supersededBy to the replacement', async () => {
+    // The replacement is written FIRST: `predicate_def.superseded_by` is a
+    // foreign key onto the same table, so a forward reference is a state
+    // Postgres cannot hold — and the store now refuses it too.
+    await store.upsert(def({ predicate: 'hourly_rate_cents' }));
     await store.upsert(
       def({ predicate: 'hourly_rate', status: 'deprecated', supersededBy: 'hourly_rate_cents' }),
     );
-    await store.upsert(def({ predicate: 'hourly_rate_cents' }));
     const r = await resolveAlias(store, 'hourly_rate');
     expect(r!.canonical.predicate).toBe('hourly_rate_cents');
     expect(r!.chain).toEqual(['hourly_rate', 'hourly_rate_cents']);
@@ -200,12 +265,31 @@ describe('resolveAlias', () => {
   });
 
   it('TERMINATES on a supersededBy cycle and flags it', async () => {
-    await store.upsert(def({ predicate: 'a_rate', supersededBy: 'b_rate' }));
+    // A cycle is REACHABLE in Postgres, but only the way the foreign key
+    // allows: `a` with no pointer, then `b` pointing at `a`, then `a`
+    // re-pointed at `b`. Writing both forward references straight off — what
+    // this test used to do — is a sequence the database would have refused, so
+    // it proved termination against a state that could not exist.
+    await store.upsert(def({ predicate: 'a_rate' }));
     await store.upsert(def({ predicate: 'b_rate', supersededBy: 'a_rate' }));
+    await store.upsert(def({ predicate: 'a_rate', supersededBy: 'b_rate' }));
     const r = await resolveAlias(store, 'a_rate');
     expect(r).not.toBeNull();
     expect(r!.cycle).toBe(true);
     expect(r!.chain).toEqual(['a_rate', 'b_rate']);
+  });
+
+  it('refuses a supersededBy that points at no row — superseded_by is a foreign key', async () => {
+    // 001: `superseded_by text references predicate_def(predicate)`. It is the
+    // only foreign key in this module whose target table the fake holds, so it
+    // is the only one it can enforce — and a dangling pointer that Postgres
+    // rejects outright used to be storable here. `resolveAlias` still handles
+    // one defensively (another writer, an older row), but this store can no
+    // longer mint it.
+    await expect(
+      store.upsert(def({ predicate: 'old_rate', supersededBy: 'never_written' })),
+    ).rejects.toThrow(/foreign key onto predicate_def/);
+    expect(await store.get('old_rate')).toBeNull();
   });
 
   it('returns null for an unknown name rather than guessing one', async () => {

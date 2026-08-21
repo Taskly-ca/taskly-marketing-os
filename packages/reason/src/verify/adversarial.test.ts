@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   checkFactSheet,
   checkIndependence,
+  modelFamily,
   parseGeneratedBy,
   passesVerification,
   verifyAdversarially,
@@ -17,7 +18,7 @@ import type {
 } from './adversarial.js';
 
 const URL = 'https://jiffyondemand.com/pricing';
-const WRITER = 'agent:groq/llama-3.3-70b@2026-05-01';
+const WRITER = 'agent:openai/gpt-oss-120b@2026-05-01';
 const OBSERVED_AT = '2026-08-04T00:00:00.000Z';
 
 /**
@@ -64,8 +65,11 @@ class SpyVerifier implements VerifierPort {
   }
 }
 
-const OTHER: ModelIdentity = { model: 'anthropic/claude-opus-4', version: '2026-06-01' };
-const SAME: ModelIdentity = { model: 'groq/llama-3.3-70b', version: '2026-05-01' };
+/** A different FAMILY, not merely a different size — see `MODELS` in
+ *  `@tmos/shared/llm`. `openai/gpt-oss-20b` would be the tempting cheap
+ *  verifier and is exactly the one this design refuses. */
+const OTHER: ModelIdentity = { model: 'qwen/qwen3.6-27b', version: '2026-06-01' };
+const SAME: ModelIdentity = { model: 'openai/gpt-oss-120b', version: '2026-05-01' };
 
 const finding = (claim: string, spans: string[] = [claim]): VerifiableFinding => ({
   claim,
@@ -87,13 +91,13 @@ describe('a model must not check its own work', () => {
     expect(passesVerification(out)).toBe(false);
     expect(out.stage).toBe('independence');
     expect(out.needs_human).toBe(true);
-    expect(out.reason).toContain('groq/llama-3.3-70b');
+    expect(out.reason).toContain('openai/gpt-oss-120b');
     // The point of the refusal: no call is made at all.
     expect(port.calls).toHaveLength(0);
   });
 
   it('refuses even when only the version differs — same weights, same blind spots', async () => {
-    const port = new SpyVerifier({ model: 'groq/llama-3.3-70b', version: '2026-09-09' });
+    const port = new SpyVerifier({ model: 'openai/gpt-oss-120b', version: '2026-09-09' });
     const out = await verify(finding('Jiffy raised prices 12%.'), port);
     expect(out.stage).toBe('independence');
     expect(port.calls).toHaveLength(0);
@@ -106,6 +110,56 @@ describe('a model must not check its own work', () => {
     expect(port.calls).toHaveLength(1);
   });
 
+  it('REFUSES a same-FAMILY sibling — a different size shares the blind spots', async () => {
+    // `openai/gpt-oss-20b` is `MODELS.small`: the tempting cheap verifier for a
+    // finding `MODELS.strong` wrote, and precisely the pair this guard exists
+    // to separate. While the registry held one Llama, comparing ids was
+    // accidentally the same as comparing families. With two sizes of one family
+    // in it, it is not — and an id comparison here would fail OPEN.
+    const sibling = new SpyVerifier({ model: 'openai/gpt-oss-20b', version: '2026-05-01' });
+    const out = await verify(finding('Jiffy raised prices 12%.'), sibling);
+
+    expect(out.stage).toBe('independence');
+    expect(passesVerification(out)).toBe(false);
+    expect(out.needs_human).toBe(true);
+    expect(out.reason).toContain('openai/gpt-oss');
+    // The point of the refusal: no call is made at all.
+    expect(sibling.calls).toHaveLength(0);
+  });
+
+  it('refuses an unprefixed pair, and a prefixed/unprefixed pair, of one lineage', () => {
+    // Groq ids are not uniformly vendor-prefixed: every historical Llama id had
+    // no prefix and `allam-2-7b` still has none. An unprefixed id is vendor
+    // UNKNOWN, so it may not be called independent of the same stem — the
+    // opposite reading would fail open on exactly the ids we cannot resolve.
+    const llama: ModelIdentity = { model: 'llama-3.3-70b-versatile', version: '2026-01-01' };
+    expect(checkIndependence(llama, 'agent:llama-3.1-8b-instant@2026-01-01')).toMatchObject({
+      independent: false,
+    });
+    const meta: ModelIdentity = { model: 'meta-llama/llama-4-scout-17b', version: '2026-04-01' };
+    expect(checkIndependence(meta, 'agent:llama-3.3-70b-versatile@2026-01-01')).toMatchObject({
+      independent: false,
+    });
+  });
+
+  it('still lets a genuinely different family verify', () => {
+    // qwen grading openai/gpt-oss is the pairing `MODELS` was chosen to give us.
+    expect(checkIndependence(OTHER, WRITER).independent).toBe(true);
+    expect(checkIndependence({ model: 'allam-2-7b', version: '1' }, WRITER).independent).toBe(true);
+    expect(
+      checkIndependence(OTHER, 'agent:meta-llama/llama-4-scout-17b@2026-04-01').independent,
+    ).toBe(true);
+  });
+
+  it('reads a family off an id — vendor plus base name, size and version dropped', () => {
+    expect(modelFamily('openai/gpt-oss-120b')).toEqual({ vendor: 'openai', stem: 'gpt-oss' });
+    expect(modelFamily('openai/gpt-oss-20b')).toEqual({ vendor: 'openai', stem: 'gpt-oss' });
+    expect(modelFamily('qwen/qwen3.6-27b')).toEqual({ vendor: 'qwen', stem: 'qwen' });
+    expect(modelFamily('llama-3.3-70b-versatile')).toEqual({ vendor: null, stem: 'llama' });
+    expect(modelFamily('allam-2-7b')).toEqual({ vendor: null, stem: 'allam' });
+    expect(modelFamily('groq/compound')).toEqual({ vendor: 'groq', stem: 'compound' });
+  });
+
   it('fails closed on a generated_by it cannot parse', async () => {
     const port = new SpyVerifier(OTHER);
     const out = await verify({ ...finding('Prices rose 12%.'), generated_by: 'mystery' }, port);
@@ -116,7 +170,7 @@ describe('a model must not check its own work', () => {
   it('allows a human-authored finding — there is no model to collude with', () => {
     expect(checkIndependence(OTHER, 'human:nishant').independent).toBe(true);
     expect(parseGeneratedBy(WRITER)).toEqual({
-      model: 'groq/llama-3.3-70b',
+      model: 'openai/gpt-oss-120b',
       version: '2026-05-01',
     });
     expect(parseGeneratedBy('human:nishant')).toBeNull();

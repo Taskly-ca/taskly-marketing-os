@@ -76,6 +76,25 @@ describe('label store', () => {
     expect(a.decidedAt).toBe('2026-08-04T00:00:00.000Z');
   });
 
+  it("refuses a self-pair — 006's er_label_not_self, and a free true positive", async () => {
+    // A pair labelled against itself is always a mistake, and this table is the
+    // calibration set: an extra guaranteed true positive moves the measured
+    // precision that the auto-merge threshold is fitted to. Postgres rejects it
+    // with a check constraint; this store used to accept it silently.
+    const store = createMemoryLabelStore();
+    await expect(
+      store.add({ ...label('x', 0.9, 'match'), leftEntity: 'a', rightEntity: 'a' }),
+    ).rejects.toThrow(/labelled against itself/);
+
+    // Case-insensitively, because these are uuids on disk and Postgres has
+    // already normalized them by the time the constraint is evaluated.
+    await expect(
+      store.add({ ...label('x', 0.9, 'match'), leftEntity: 'A1B2', rightEntity: 'a1b2' }),
+    ).rejects.toThrow(/labelled against itself/);
+
+    expect(await store.all()).toHaveLength(0);
+  });
+
   it('returns copies, so a caller cannot mutate the store through them', async () => {
     const store = createMemoryLabelStore();
     await store.add({ ...label('x', 0.9, 'match'), leftEntity: 'a', rightEntity: 'b' });

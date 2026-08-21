@@ -1,5 +1,5 @@
 /**
- * SYNTHESIS — ONE WRITER, ALWAYS.
+ * SYNTHESIS — the batch writer.
  *
  * Exactly one component turns worker output into Findings. Multiple agents
  * writing into one document produce contradictions that no reviewer can see:
@@ -7,29 +7,31 @@
  * and the person reading at 6pm has no way to notice. Workers gather; this
  * module writes; nothing else may.
  *
- * It refuses more than it emits, on purpose. Four gates, in order, all of them
- * collected so a refusal explains itself completely:
+ * "Nothing else may" is now enforced rather than asserted. The Finding object
+ * itself is built by `finding/mint.ts`, which runs the gates and is the only
+ * module in this package that constructs one — this file assembles drafts and
+ * hands them over. T2's `assembleFinding` goes through the same door.
  *
- *   1. so_what — a Finding without a consequence is a fact, not intelligence.
- *                Empty, too short, or a restatement of the claim is refused.
- *   2. honesty — `assertHonest` over claim AND so_what. Both are generated
- *                prose; checking only the claim leaves half of every finding
- *                ungated.
- *   3. causal  — `assertCausalLanguage` against the finding's own causal_rung.
- *                Below rung 2, causal verbs are refused.
- *   4. L0      — every number and date in the claim must appear verbatim in a
- *                cited span, and every cited URL must be one we retrieved.
+ * What is left here is the batch shape: pooling worker evidence, and emitting
+ * or refusing each draft in a single deterministic pass. It refuses more than
+ * it emits, on purpose, and every reason a draft was refused comes back at
+ * once rather than one per round-trip.
  *
  * A finding that fails L0 is NOT a draft to fix later. It is a fabrication, and
  * emitting it "for review" is how fabrications get reviewed by a tired human at
  * 6pm and shipped. There is no `force` flag here and there must never be one.
  */
-import { findingSchema } from '@tmos/contracts';
 import type { Basis, EvidenceRef, Finding, Region } from '@tmos/contracts';
-import { assertCausalLanguage } from '@tmos/guardrails';
 import type { CausalRung } from '@tmos/guardrails';
-import { assertL0 } from './verify/l0.js';
+import { assertGatesAreWired, mintFinding } from './finding/mint.js';
+import type { HonestyGate, RefusalReason } from './finding/mint.js';
 import type { WorkerOutcome } from './tier/workers.js';
+
+/** The gate set and the so_what thresholds live with the mint now. Re-exported
+ *  because they were part of this module's surface first, and a consumer
+ *  should not have to care which file the rule moved to. */
+export type { RefusalCode, RefusalReason } from './finding/mint.js';
+export { MIN_SO_WHAT_CHARS, SO_WHAT_MAX_OVERLAP } from './finding/mint.js';
 
 /* ── inputs ───────────────────────────────────────────────────────────────── */
 
@@ -60,12 +62,12 @@ export interface SynthesisDeps {
   /**
    * Wire to `assertHonest` from `packages/guardrails/src/honesty.ts`.
    *
-   * Injected only because `@tmos/guardrails`' barrel does not export honesty
-   * yet. It is REQUIRED (no default) and is canary-tested before any draft is
-   * read, so a no-op cannot be substituted: the gate is impossible to forget
-   * AND impossible to disable.
+   * Injected so a caller can pin a surface-specific gate, not so the gate can
+   * be opted out of. It is REQUIRED (no default) and canary-tested before any
+   * draft is read AND again inside the mint, so a no-op cannot be substituted:
+   * the gate is impossible to forget AND impossible to disable.
    */
-  honesty: (text: string, surface: string) => void;
+  honesty: HonestyGate;
   /** Injected — no Date.now() in library code. */
   now: () => Date;
   /** 'agent:model@version'. Recorded on every emitted Finding. */
@@ -89,13 +91,6 @@ export interface SynthesisInput {
 
 /* ── refusals ─────────────────────────────────────────────────────────────── */
 
-export type RefusalCode = 'trivial_so_what' | 'honesty' | 'causal' | 'l0' | 'schema';
-
-export interface RefusalReason {
-  code: RefusalCode;
-  detail: string;
-}
-
 export interface Refusal {
   draftId: string;
   reasons: RefusalReason[];
@@ -105,67 +100,6 @@ export interface SynthesisResult {
   emitted: Finding[];
   refused: Refusal[];
 }
-
-/* ── so_what ──────────────────────────────────────────────────────────────── */
-
-/** Shorter than this states a mood, not a consequence. */
-export const MIN_SO_WHAT_CHARS = 20;
-
-/** Share of so_what's words already in the claim, at or above which it is a
- *  restatement. 0.8 leaves room to reuse the subject nouns while still
- *  demanding new content words. */
-export const SO_WHAT_MAX_OVERLAP = 0.8;
-
-const words = (text: string): string[] => text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-
-function checkSoWhat(claim: string, soWhat: string): RefusalReason | null {
-  const trimmed = soWhat.trim();
-  if (trimmed.length < MIN_SO_WHAT_CHARS) {
-    return {
-      code: 'trivial_so_what',
-      detail: `so_what is ${trimmed.length} chars; a consequence needs at least ${MIN_SO_WHAT_CHARS}`,
-    };
-  }
-  const soWords = new Set(words(trimmed));
-  if (soWords.size === 0) return { code: 'trivial_so_what', detail: 'so_what has no words' };
-  const claimWords = new Set(words(claim));
-  let shared = 0;
-  for (const w of soWords) if (claimWords.has(w)) shared += 1;
-  const overlap = shared / soWords.size;
-  if (overlap >= SO_WHAT_MAX_OVERLAP) {
-    return {
-      code: 'trivial_so_what',
-      detail:
-        `so_what restates the claim (${overlap.toFixed(2)} word overlap, limit ` +
-        `${SO_WHAT_MAX_OVERLAP}); say what changes because of it`,
-    };
-  }
-  return null;
-}
-
-/* ── the honesty canary ───────────────────────────────────────────────────── */
-
-/** A sentence the real gate must reject. Two independent forbidden claims, so
- *  even a partial implementation trips it. */
-const HONESTY_CANARY =
-  'Every Tasker carries $2M liability insurance and passes a criminal background check.';
-
-function assertGateIsWired(honesty: SynthesisDeps['honesty']): void {
-  let threw = false;
-  try {
-    honesty(HONESTY_CANARY, 'poster_facing');
-  } catch {
-    threw = true;
-  }
-  if (!threw) {
-    throw new Error(
-      'honesty gate is not wired to a real implementation: it accepted the canary. ' +
-        'Wire SynthesisDeps.honesty to assertHonest from packages/guardrails.',
-    );
-  }
-}
-
-const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 /* ── worker output ────────────────────────────────────────────────────────── */
 
@@ -198,74 +132,39 @@ const toEvidenceRef = (e: SynthesisEvidence): EvidenceRef => ({
 });
 
 export function synthesize(input: SynthesisInput, deps: SynthesisDeps): SynthesisResult {
-  assertGateIsWired(deps.honesty);
-  const surface = input.surface ?? 'internal';
+  // The mint canaries the gates too. This up-front call is what makes a stubbed
+  // gate fail a run of ZERO drafts — the case where nothing else would notice.
+  assertGatesAreWired(deps.honesty);
+  const gates = {
+    honesty: deps.honesty,
+    surface: input.surface ?? 'internal',
+    retrievedUrls: input.retrievedUrls,
+  };
   const createdAt = deps.now().toISOString();
 
   const emitted: Finding[] = [];
   const refused: Refusal[] = [];
 
   for (const d of input.drafts) {
-    const reasons: RefusalReason[] = [];
-
-    const trivial = checkSoWhat(d.claim, d.so_what);
-    if (trivial) reasons.push(trivial);
-
-    // Both generated fields, both gates, every time. There is no path through
-    // this loop that generates prose without checking it.
-    for (const [field, text] of [
-      ['claim', d.claim],
-      ['so_what', d.so_what],
-    ] as const) {
-      try {
-        deps.honesty(text, surface);
-      } catch (err) {
-        reasons.push({ code: 'honesty', detail: `${field}: ${message(err)}` });
-      }
-      try {
-        assertCausalLanguage(text, d.causal_rung);
-      } catch (err) {
-        reasons.push({ code: 'causal', detail: `${field}: ${message(err)}` });
-      }
-    }
-
-    const evidence = d.evidence.map(toEvidenceRef);
-    const l0 = assertL0({ claim: d.claim, evidence, retrievedUrls: input.retrievedUrls });
-    if (!l0.ok) {
-      reasons.push({
-        code: 'l0',
-        detail: l0.violations.map((v) => `${v.code}: ${v.detail}`).join(' | '),
-      });
-    }
-
-    const finding: Finding = {
-      id: d.id,
-      claim: d.claim,
-      so_what: d.so_what,
-      subject_refs: [...d.subject_refs],
-      evidence,
-      basis: d.basis,
-      causal_rung: d.causal_rung,
-      stakes: d.stakes,
-      region: d.region,
-      domain_score: d.domain_score,
-      generated_by: deps.generatedBy,
-      reviewed_by: null,
-      superseded_by: null,
-      supersede_reason: null,
-      created_at: createdAt,
-    };
-
-    const parsed = findingSchema.safeParse(finding);
-    if (!parsed.success) {
-      reasons.push({
-        code: 'schema',
-        detail: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(' | '),
-      });
-    }
-
-    if (reasons.length > 0) refused.push({ draftId: d.id, reasons });
-    else emitted.push(finding);
+    const result = mintFinding(
+      {
+        id: d.id,
+        claim: d.claim,
+        so_what: d.so_what,
+        subject_refs: d.subject_refs,
+        evidence: d.evidence.map(toEvidenceRef),
+        basis: d.basis,
+        causal_rung: d.causal_rung,
+        stakes: d.stakes,
+        region: d.region,
+        domain_score: d.domain_score,
+        generated_by: deps.generatedBy,
+        created_at: createdAt,
+      },
+      gates,
+    );
+    if (result.ok) emitted.push(result.finding);
+    else refused.push({ draftId: d.id, reasons: result.reasons });
   }
 
   return { emitted, refused };

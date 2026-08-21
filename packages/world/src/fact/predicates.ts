@@ -15,6 +15,7 @@
  * A `proposed` predicate is fully usable — the FK only needs the row to exist.
  * Promotion governs what the semantic layer ADVERTISES, not what may be stored.
  */
+import { ConstraintError } from './memory-store.js';
 import { rangeContains } from './types.js';
 import type { FactRow, FactValue } from './types.js';
 import { sameValue } from './write.js';
@@ -111,9 +112,62 @@ export function createMemoryPredicateStore(
       }
       return null;
     },
+    /**
+     * The definition is replaced; the LEDGER is reconciled, never replaced.
+     *
+     * `occurrences` and `distinctSources` are not settable columns in Postgres.
+     * 007 made `predicate_occurrence(predicate, source_id, count)` the record
+     * and `predicate_occurrence_sync` recomputes `predicate_def.occurrences`
+     * from `sum(count)` after every ledger write, so the adapter reconciles the
+     * ledger from the delta and never writes the column at all. A ledger only
+     * ever grows: a source that has been seen cannot be un-seen, and a total
+     * cannot go down.
+     *
+     * This store used to take both fields verbatim, which made two writes
+     * possible here that the database ignores — handing back a stale `def`
+     * (rolling the counter backwards) and passing a shortened
+     * `distinctSources` (un-seeing a source). Both silently move
+     * `evaluatePromotion`'s answer, and only in the fake. The arithmetic below
+     * is `reconcileOccurrences`', so the two agree:
+     *
+     *     after.occurrences = before + max(newSources, requestedDelta)
+     *
+     * `max` rather than the delta because a new source always writes a ledger
+     * row worth 1, even when the caller asked for no increase at all.
+     */
     async upsert(def) {
-      const stored = clone({ ...def, predicate: normalizePredicateName(def.predicate) });
-      defs.set(stored.predicate, stored);
+      const predicate = normalizePredicateName(def.predicate);
+      const before = defs.get(predicate) ?? null;
+
+      // `predicate_def.superseded_by text references predicate_def(predicate)`
+      // (001) — a self-referencing foreign key, and the ONE foreign key in this
+      // package whose target table the fake actually holds, so it is the one it
+      // can enforce. A forward reference is impossible in Postgres: write the
+      // replacement first. The comparison is on the RAW name, as the FK is —
+      // `resolveAlias` normalizes on read, but the database compares text.
+      if (
+        def.supersededBy !== null &&
+        def.supersededBy !== predicate &&
+        !defs.has(def.supersededBy)
+      ) {
+        throw new ConstraintError(
+          `upsert: ${predicate}.supersededBy points at ${JSON.stringify(def.supersededBy)}, ` +
+            'which no predicate_def row holds — superseded_by is a foreign key onto ' +
+            'predicate_def(predicate). Write the replacement first.',
+        );
+      }
+
+      const known = before?.distinctSources ?? [];
+      const added = def.distinctSources.filter((sourceId) => !known.includes(sourceId));
+      const delta = def.occurrences - (before?.occurrences ?? 0);
+
+      const stored = clone({
+        ...def,
+        predicate,
+        occurrences: (before?.occurrences ?? 0) + Math.max(added.length, delta),
+        distinctSources: [...known, ...added],
+      });
+      defs.set(predicate, stored);
       return clone(stored);
     },
     async all() {
