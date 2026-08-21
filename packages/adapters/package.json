@@ -24,6 +24,7 @@
     "@tmos/gate": "workspace:*",
     "@tmos/intel": "workspace:*",
     "@tmos/reason": "workspace:*",
+    "@tmos/surface": "workspace:*",
     "@tmos/world": "workspace:*"
   }
 }

@@ -57,6 +57,27 @@ importers:
         specifier: workspace:*
         version: link:../../packages/surface
 
+  apps/worker:
+    dependencies:
+      '@tmos/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
+      '@tmos/collectors':
+        specifier: workspace:*
+        version: link:../../packages/collectors
+      '@tmos/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@tmos/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@tmos/gate':
+        specifier: workspace:*
+        version: link:../../packages/gate
+      '@tmos/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+
   packages/adapters:
     dependencies:
       '@tmos/brain':
@@ -83,6 +104,9 @@ importers:
       '@tmos/reason':
         specifier: workspace:*
         version: link:../reason
+      '@tmos/surface':
+        specifier: workspace:*
+        version: link:../surface
       '@tmos/world':
         specifier: workspace:*
         version: link:../world

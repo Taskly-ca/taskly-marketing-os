@@ -45,6 +45,7 @@ export * from './errors.js';
 
 export * from './pg/values.js';
 export * from './pg/fact-row.js';
+export * from './pg/fact-record.js';
 export * from './pg/fact-store.js';
 export * from './pg/predicate-store.js';
 export * from './pg/er-labels.js';

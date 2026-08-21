@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  // declaration emit is OFF: this is an application, nothing imports its types,
+  // and the ports it wires are typed by `ReturnType<typeof create...>` — naming
+  // those in a .d.ts would drag six domain packages in as direct dependencies
+  // for no reader's benefit.
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}
