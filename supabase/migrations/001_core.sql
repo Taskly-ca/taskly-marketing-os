@@ -7,6 +7,11 @@
 create extension if not exists pgcrypto;
 create extension if not exists pg_trgm;
 create extension if not exists vector;
+-- btree_gist: `fact` (002) indexes `gist (entity_id, valid)`. GiST has no default
+-- operator class for uuid, so that index — and therefore the whole bitemporal
+-- core — cannot be created without this. Found by applying 002 to a real
+-- Postgres 17 for the first time on 2026-08-21; it had never been executed.
+create extension if not exists btree_gist;
 
 -- ── events ──────────────────────────────────────────────────────────────────
 create table if not exists events (
