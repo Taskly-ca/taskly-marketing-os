@@ -15,26 +15,36 @@ import { readFileSync } from 'node:fs';
 import { createRssCollector, USER_AGENT } from '@tmos/collectors';
 import type { CollectorContext, FetchTextResult, RawItem } from '@tmos/collectors';
 import { canonicalizeUrl, simhash, isNearDuplicate, registrableDomain } from '@tmos/gate';
-import { callGroq, createBudgetState } from '@tmos/shared';
+import { MODELS, callGroq, createBudgetState } from '@tmos/shared';
 import type { BudgetLimits } from '@tmos/shared';
 import { assertL0 } from '@tmos/reason';
 import { checkHonesty } from '@tmos/guardrails';
 import { renderBasis, assertNoConfidenceNumber } from '@tmos/surface';
 import { GTA_WATCHLIST, splitGoogleNewsTitle, sameEvent } from './watchlist.js';
 
-const env = (name: string, fallback = ''): string => {
-  const raw = readFileSync('/Users/nishant/Documents/Taskly/.env.local', 'utf8');
-  const line = raw.split('\n').find((l) => l.startsWith(`${name}=`));
-  return (
-    (line ?? '')
-      .slice(name.length + 1)
-      .replace(/^["']|["']$/g, '')
-      .trim() || fallback
-  );
+/**
+ * The key comes from THIS repo's .env — read at runtime, never written
+ * anywhere, never logged.
+ *
+ * It used to be read from the marketplace repo's `.env.local`, which also
+ * carries `GROQ_MODEL=llama-3.3-70b-versatile`. Groq retired that model, so
+ * inheriting the marketplace's pin quietly pointed the live suite at a
+ * `model_not_found`. The model id now comes from `MODELS`, which is the one
+ * place in this repo allowed to name one.
+ */
+const groqKey = (): string => {
+  const raw = readFileSync(new URL('../../../.env', import.meta.url), 'utf8');
+  const line = raw.split('\n').find((l) => l.startsWith('GROQ_API_KEY='));
+  return (line ?? '')
+    .slice('GROQ_API_KEY='.length)
+    .replace(/^["']|["']$/g, '')
+    .trim();
 };
 
-const GROQ_KEY = env('GROQ_API_KEY');
-const GROQ_MODEL = env('GROQ_MODEL', 'llama-3.3-70b-versatile');
+const GROQ_KEY = groqKey();
+
+/** The watchlist skim is T1: forty headlines, triaged. Small model. */
+const GROQ_MODEL: string = MODELS.small;
 const RUN = 'gta-watchlist-1';
 
 const LIMITS: BudgetLimits = { maxRunTokens: 200_000, maxDailyCostCents: 200, maxToolDepth: 8 };
@@ -160,7 +170,10 @@ describe('the GTA watchlist, live', () => {
         {
           model: GROQ_MODEL,
           json: true,
-          maxTokens: 2000,
+          // See the note in pipeline.live.test.ts: reasoning tokens come out of
+          // this ceiling, and forty items need room to be scored after it.
+          reasoningEffort: 'low',
+          maxTokens: 6_000,
           messages: [
             {
               role: 'system',

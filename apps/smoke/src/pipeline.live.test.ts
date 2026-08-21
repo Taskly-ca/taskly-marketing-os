@@ -26,7 +26,7 @@ import {
 } from '@tmos/collectors';
 import type { CollectorContext, FetchTextResult, RawItem } from '@tmos/collectors';
 import { canonicalizeUrl, simhash, isNearDuplicate } from '@tmos/gate';
-import { callGroq, createBudgetState } from '@tmos/shared';
+import { MODELS, callGroq, createBudgetState } from '@tmos/shared';
 import type { BudgetLimits } from '@tmos/shared';
 import { assertL0, extractNumbers } from '@tmos/reason';
 import { checkHonesty } from '@tmos/guardrails';
@@ -34,21 +34,30 @@ import { renderBasis, assertNoConfidenceNumber } from '@tmos/surface';
 
 /* ── environment ──────────────────────────────────────────────────────────── */
 
-function envFromTasklyRepo(): { key: string; model: string } {
-  // The key lives in the marketplace repo's .env.local. Read at runtime, never
-  // written anywhere, never logged.
-  const raw = readFileSync('/Users/nishant/Documents/Taskly/.env.local', 'utf8');
-  const pick = (name: string): string => {
-    const line = raw.split('\n').find((l) => l.startsWith(`${name}=`));
-    return (line ?? '')
-      .slice(name.length + 1)
-      .replace(/^["']|["']$/g, '')
-      .trim();
-  };
-  return { key: pick('GROQ_API_KEY'), model: pick('GROQ_MODEL') || 'llama-3.3-70b-versatile' };
-}
+/**
+ * The key comes from THIS repo's .env — read at runtime, never written
+ * anywhere, never logged.
+ *
+ * It used to be read from the marketplace repo's `.env.local`, which also
+ * carries `GROQ_MODEL=llama-3.3-70b-versatile`. Groq retired that model, so
+ * inheriting the marketplace's pin quietly pointed the live suite at a
+ * `model_not_found`. The model id now comes from `MODELS`, which is the one
+ * place in this repo allowed to name one.
+ */
+const groqKey = (): string => {
+  const raw = readFileSync(new URL('../../../.env', import.meta.url), 'utf8');
+  const line = raw.split('\n').find((l) => l.startsWith('GROQ_API_KEY='));
+  return (line ?? '')
+    .slice('GROQ_API_KEY='.length)
+    .replace(/^["']|["']$/g, '')
+    .trim();
+};
 
-const { key: GROQ_KEY, model: GROQ_MODEL } = envFromTasklyRepo();
+const GROQ_KEY = groqKey();
+
+/** T1 skim is triage over every collected item, so it runs on the small model.
+ *  Step 4 below is that tier, not a synthesis, and is priced accordingly. */
+const GROQ_MODEL: string = MODELS.small;
 
 const LIMITS: BudgetLimits = {
   maxRunTokens: 100_000,
@@ -152,7 +161,11 @@ describe('the pipeline, against the real world', () => {
         {
           model: GROQ_MODEL,
           json: true,
-          maxTokens: 700,
+          // Low effort, and the ceiling raised to cover what reasoning still
+          // costs: on a reasoning model `maxTokens` is thinking + answer, and
+          // a JSON response that never lands is a 400, not a short answer.
+          reasoningEffort: 'low',
+          maxTokens: 2_000,
           messages: [
             {
               role: 'system',

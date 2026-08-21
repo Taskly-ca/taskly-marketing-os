@@ -20,15 +20,60 @@ import type { BudgetLimits, BudgetState, SpendOutcome } from './budget.js';
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
-/** Groq's per-million-token prices, in cents, for the models we use.
- *  Estimates are for the BUDGET, not for billing — they only need to be close
- *  enough that a runaway is caught before it is expensive. */
+/**
+ * The models this system may name, keyed by ROLE rather than by size.
+ *
+ * A call site knows whether it is skimming or deciding; it should not also have
+ * to know which weights that implies this month. Groq retired
+ * `llama-3.3-70b-versatile` and `llama-3.1-8b-instant` — the API answers
+ * `model_not_found` for both — and the only reason that was a small change is
+ * that the ids live in exactly one place.
+ *
+ * `verifier` is not a third size. It is a different FAMILY, and that is a
+ * correctness requirement rather than a preference: `reason/verify/adversarial`
+ * refuses to run when the verifier's identity matches the writer's, because a
+ * model asked to check its own output is scoring the continuation it would have
+ * written. Two sizes of one family share the training and therefore the blind
+ * spots, so `openai/gpt-oss-20b` may never verify `openai/gpt-oss-120b`. Qwen
+ * is a different lineage entirely. Keep it that way.
+ */
+export const MODELS = {
+  /** Classification, synthesis, T3 orchestration — everything that decides. */
+  strong: 'openai/gpt-oss-120b',
+  /** T1 skim. It runs over EVERY collected item, so cheap and fast is the
+   *  whole specification; T1 triages, it never decides truth. */
+  small: 'openai/gpt-oss-20b',
+  /** The adversarial verifier. A different family from `strong`, on purpose. */
+  verifier: 'qwen/qwen3.6-27b',
+} as const;
+
+/**
+ * Price per MILLION tokens, in CENTS. Both halves of that matter, and the unit
+ * is DERIVED from `estimateCostCents` rather than asserted here:
+ *
+ *     cents = (tokens / 1_000_000) * rate      ⇒  rate is cents per Mtok
+ *
+ * Groq publishes dollars per million, so each number below is the published
+ * dollar figure × 100. The table this replaced used × 10 and so under-counted
+ * every call tenfold — a $20 ceiling that only stops at $200 is not a ceiling.
+ * `groq.test.ts` pins the unit with a worked example, because this is the one
+ * number in the system whose being wrong is silent.
+ *
+ * Rates read from https://console.groq.com/docs/models on 2026-08-22.
+ */
 const PRICE_CENTS_PER_MTOK: Record<string, { in: number; out: number }> = {
-  'llama-3.3-70b-versatile': { in: 5.9, out: 7.9 },
-  'llama-3.1-8b-instant': { in: 0.5, out: 0.8 },
+  [MODELS.strong]: { in: 15, out: 60 }, // $0.15 in / $0.60 out per 1M
+  [MODELS.small]: { in: 7.5, out: 30 }, // $0.075 in / $0.30 out per 1M
+  // $0.60 in / $3.00 out per 1M. The verifier's output costs 5× the strong
+  // model's, which is an argument for short refutations — never an argument for
+  // verifying with a cheaper relative of the writer.
+  [MODELS.verifier]: { in: 60, out: 300 },
 };
 
-const DEFAULT_PRICE = { in: 6, out: 8 };
+/** An unlisted model is priced as the most expensive one we know. This is a
+ *  deliberate over-estimate, NOT a published rate: over-estimating costs us a
+ *  call, under-estimating costs money, and only one of those is recoverable. */
+const DEFAULT_PRICE = { in: 60, out: 300 };
 
 export interface GroqMessage {
   role: 'system' | 'user' | 'assistant';
@@ -41,9 +86,22 @@ export interface GroqRequest {
   /** Deterministic by default — a reasoning system that cannot reproduce its
    *  own output cannot be debugged. */
   temperature?: number;
+  /**
+   * Ceiling on COMPLETION tokens — and on a reasoning model that includes the
+   * reasoning, which is why it is also the pre-authorisation figure below.
+   */
   maxTokens?: number;
   /** Ask for a JSON object back. Groq honours OpenAI's response_format. */
   json?: boolean;
+  /**
+   * Reasoning models (the whole gpt-oss family) spend completion tokens
+   * thinking before they answer, billed at the OUTPUT rate. Left at the
+   * provider default a T1 skim pays for medium-effort reasoning on every item
+   * it triages — and, worse, can exhaust `maxTokens` mid-thought and return
+   * nothing, which with `json: true` surfaces as a 400 `json_validate_failed`
+   * rather than as a short answer. Tiers that triage should ask for 'low'.
+   */
+  reasoningEffort?: 'low' | 'medium' | 'high';
 }
 
 export interface GroqUsage {
@@ -124,6 +182,7 @@ export async function callGroq(req: GroqRequest, deps: GroqDeps): Promise<GroqRe
         messages: req.messages,
         temperature: req.temperature ?? 0,
         max_tokens: maxTokens,
+        ...(req.reasoningEffort ? { reasoning_effort: req.reasoningEffort } : {}),
         ...(req.json ? { response_format: { type: 'json_object' } } : {}),
       }),
       signal: controller.signal,
