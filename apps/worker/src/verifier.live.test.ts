@@ -86,10 +86,8 @@ describe.skipIf(!HAS_KEY)('the adversarial verifier, live', () => {
     // verifier reading the evidence should not wave this through. Reported
     // rather than asserted — see the header.
     if (passesVerification(outcome)) {
-      // eslint-disable-next-line no-console
       console.warn(`verifier PASSED a claim its span contradicts: ${outcome.reason}`);
     } else {
-      // eslint-disable-next-line no-console
       console.warn(`verdict ${outcome.verdict}: ${outcome.reason}`);
     }
   });
