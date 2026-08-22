@@ -23,7 +23,8 @@
       "entry": [
         "src/seed/run.ts",
         "src/cascade.ts",
-        "src/watch.ts"
+        "src/watch.ts",
+        "src/report.ts"
       ]
     }
   }
