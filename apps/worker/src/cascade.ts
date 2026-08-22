@@ -20,16 +20,22 @@ import { assertHonest } from '@tmos/guardrails';
 import {
   skimItems,
   createMemorySkimCache,
+  passesVerification,
+  scoreFinding,
   synthesize,
   type SkimItem,
   type SkimPort,
   type SkimInput,
   type SkimVerdict,
   type FindingDraft,
+  type SourceTier,
 } from '@tmos/reason';
 import { createPostgresFindingStore } from '@tmos/adapters';
 
 import { createTransport } from './transport.js';
+import { CAC_CEILING_CENTS } from './change-finding.js';
+import { loadFactSheet } from './fact-sheet.js';
+import { createGroqVerifier, verifyForPublication } from './verifier.js';
 import { db, sql, closePool } from '@tmos/db';
 
 const RUN = randomUUID();
@@ -119,6 +125,12 @@ function makeSkimPort(apiKey: string, limits: BudgetLimits): SkimPort & { spentC
 
       if (!res.ok) {
         await logUsage({ outcome: res.reason === 'blocked' ? res.outcome : 'allowed', reason: res.reason, tokensIn: 0, tokensOut: 0, cents: 0 });
+        // PRINTED BEFORE IT IS THROWN. `skimItems` turns a throw into an
+        // abstention reading "skim call failed — needs a look", which is the
+        // right behaviour and discards the only copy of WHY. A run of 120
+        // signals showed twenty of them abstaining on one failed batch with no
+        // way to tell a rate limit from a bad request from an expired key.
+        console.log(`[T1] batch of ${batch.length} failed: ${JSON.stringify(res).slice(0, 240)}`);
         // A tier that cannot score returns nothing rather than guessing zero:
         // a fabricated 0 is indistinguishable from "we looked and it was dull".
         throw new Error(`skim failed: ${JSON.stringify(res).slice(0, 200)}`);
@@ -306,16 +318,22 @@ async function main(): Promise<void> {
 
   const rows = await db().query<{
     id: string; content_hash: string; title: string | null; body: string; url: string | null;
-    observed_at: string | null;
+    observed_at: string | null; tier: string | null;
   }>(sql`
-    select id::text as id,
-           content_hash,
-           payload->>'title' as title,
-           coalesce(payload->>'body', '') as body,
-           coalesce(canonical_url, url) as url,
-           observed_at::text as observed_at
-      from signal
-     order by created_at desc
+    select g.id::text as id,
+           g.content_hash,
+           g.payload->>'title' as title,
+           coalesce(g.payload->>'body', '') as body,
+           coalesce(g.canonical_url, g.url) as url,
+           g.observed_at::text as observed_at,
+           -- What the claim will REST on. The domain scorer weights source tier
+           -- at 0.40, the largest single term, and reading it off the signal's
+           -- own source is the difference between scoring the claim and scoring
+           -- a guess about where it came from.
+           s.tier
+      from signal g
+      join source s on s.id = g.source_id
+     order by g.created_at desc
      limit 120`);
 
   const now = new Date();
@@ -389,6 +407,26 @@ async function main(): Promise<void> {
       continue;
     }
 
+    /**
+     * The DOMAIN SCORER, not T1's materiality.
+     *
+     * `scoring/domain.ts` encodes the priors that make a ranking about this
+     * business — source tier at 0.40, the GTA corridor at 0.35 — and shows its
+     * work, which is the point: a number a reader cannot argue with is one they
+     * will eventually ignore. Triage materiality stood in here until now, and a
+     * relevance PROXY read by every surface as a relevance MEASUREMENT is the
+     * quiet kind of wrong.
+     */
+    const scored = scoreFinding(
+      {
+        claim: d.claim,
+        so_what: d.so_what,
+        source_tiers: [(r.tier ?? 'aggregator') as SourceTier],
+        channel: null,
+      },
+      { cacCeilingCents: CAC_CEILING_CENTS },
+    );
+
     retrievedUrls.push(r.url);
     drafts.push({
       id: randomUUID(),
@@ -403,11 +441,7 @@ async function main(): Promise<void> {
       causal_rung: 0,
       stakes: v.materiality >= 0.6 ? 'high' : 'medium',
       region: 'ca',
-      // T1's materiality, standing in for the domain scorer. `scoring/domain.ts`
-      // encodes the real Taskly priors — the CAC ceiling, trust tiers, the GTA
-      // corridor — and is NOT wired here; using triage materiality is an honest
-      // approximation, not that scorer's answer.
-      domain_score: Math.max(0, Math.min(1, v.materiality)),
+      domain_score: scored.domain_score,
     });
   }
 
@@ -427,9 +461,49 @@ async function main(): Promise<void> {
       console.log(`      ✗ ${r.reasons.map((x) => `${x.code}: ${x.detail}`).join('; ')}`);
     }
 
+    /**
+     * VERIFIED BEFORE STORED, on this path too.
+     *
+     * The synthesis gates check that a claim is well-formed and sourced. They
+     * do not ask a second model whether it is TRUE given the span, which is the
+     * different question a news item most needs asked: the writer chose both
+     * the claim and the quotation, from one article, in one pass.
+     */
+    const facts = loadFactSheet();
+    const verifier = createGroqVerifier({
+      apiKey: env.GROQ_API_KEY ?? '',
+      limits,
+      runId: RUN,
+      onUsage: async (u) => {
+        await logUsage({
+          outcome: u.outcome,
+          reason: u.reason,
+          tokensIn: u.promptTokens,
+          tokensOut: u.completionTokens,
+          cents: u.costCents,
+        });
+      },
+    });
+
+    const published: typeof result.emitted = [];
+    let withheld = 0;
+    for (const f of result.emitted) {
+      const check = await verifyForPublication(
+        { claim: f.claim, evidence: f.evidence, generated_by: f.generated_by },
+        { verifier, retrievedUrls, facts },
+      );
+      if (!passesVerification(check)) {
+        withheld += 1;
+        console.log(`      ✗ ${check.verdict} at ${check.stage}: ${check.reason.slice(0, 150)}`);
+        continue;
+      }
+      published.push(f);
+    }
+    console.log(`[T3] verified: ${published.length} survive, ${withheld} withheld by ${MODELS.verifier}`);
+
     let stored = 0;
     let duplicate = 0;
-    for (const f of result.emitted) {
+    for (const f of published) {
       const put = await store.put(f);
       if (put.ok && put.stored) stored += 1;
       else if (put.ok) duplicate += 1;
@@ -437,7 +511,7 @@ async function main(): Promise<void> {
     }
     console.log(`[T3] STORED: ${stored}   already held: ${duplicate}`);
 
-    for (const f of result.emitted) {
+    for (const f of published) {
       console.log(`\n  ── ${f.claim}`);
       console.log(`     so what: ${f.so_what}`);
       console.log(`     subject: ${f.subject_refs.join(', ')} · basis ${f.basis} · rung ${f.causal_rung} · ${f.stakes}`);
