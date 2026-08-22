@@ -78,7 +78,18 @@ export interface HnCollectorOptions {
   /** Overridable so the endpoint itself is policy-checked and testable. */
   endpoint?: string;
   hitsPerPage?: number;
+  /**
+   * How far back a COLD start looks, in days. Only used when there is no cursor.
+   *
+   * `search_by_date` returns the newest matches, which sounds like it bounds
+   * itself and does not: for a narrow query the newest fifty stories can reach
+   * back a decade, and they did — the first real run ingested Hacker News posts
+   * from 2009 and triage scored a 2012 acquisition as a live competitor move.
+   */
+  lookbackDays?: number;
 }
+
+const DEFAULT_LOOKBACK_DAYS = 120;
 
 export function createHnCollector(
   query: string,
@@ -88,6 +99,7 @@ export function createHnCollector(
   const q = query.trim();
   const endpoint = opts.endpoint ?? DEFAULT_ENDPOINT;
   const hitsPerPage = opts.hitsPerPage ?? DEFAULT_HITS_PER_PAGE;
+  const lookbackDays = opts.lookbackDays ?? DEFAULT_LOOKBACK_DAYS;
 
   return {
     kind: 'hn',
@@ -97,7 +109,23 @@ export function createHnCollector(
     async collect(ctx: CollectorContext): Promise<CollectResult> {
       if (!q) return fail('not_configured', 'no hn query supplied', false);
 
-      const url = `${endpoint}?tags=story&query=${encodeURIComponent(q)}&hitsPerPage=${hitsPerPage}`;
+      // ── THE CURSOR, WHICH THIS COLLECTOR USED TO IGNORE ──────────────────
+      //
+      // `ctx.cursor` arrived and was never read, and no cursor was ever
+      // returned, so every run refetched the same fifty stories for all time.
+      // The outbox's idempotency key meant nothing was double-WRITTEN, so the
+      // waste was invisible — the cost was paid at the most expensive layer, and
+      // a decade of history was re-presented as new on every pass.
+      //
+      // The cursor is the newest `created_at_i` we have seen. Absent one, fall
+      // back to a bounded window rather than all of history.
+      const floorFromLookback = Math.floor(Date.now() / 1000) - lookbackDays * 86_400;
+      const fromCursor = Number.parseInt(ctx.cursor ?? '', 10);
+      const since = Number.isFinite(fromCursor) && fromCursor > 0 ? fromCursor : floorFromLookback;
+
+      const url =
+        `${endpoint}?tags=story&query=${encodeURIComponent(q)}&hitsPerPage=${hitsPerPage}` +
+        `&numericFilters=${encodeURIComponent(`created_at_i>${since}`)}`;
       const verdict = checkHost(url);
       if (!verdict.allowed) return fail('blocked_by_policy', verdict.reason, false);
 
@@ -136,6 +164,7 @@ export function createHnCollector(
       }
 
       const items: RawItem[] = [];
+      let newest = since;
       for (const raw of hits) {
         if (!isRecord(raw)) continue;
         const objectId = str(raw.objectID);
@@ -146,6 +175,9 @@ export function createHnCollector(
         // Never store a link to a host we are not allowed to touch.
         const link = outbound && checkHost(outbound).allowed ? outbound : discussion;
         const title = plainText(str(raw.title));
+
+        const createdAtI = num(raw.created_at_i);
+        if (createdAtI !== null && createdAtI > newest) newest = createdAtI;
 
         items.push({
           externalId: objectId,
@@ -161,7 +193,11 @@ export function createHnCollector(
         });
       }
 
-      return ok(items, etag ? { etag } : {});
+      const advanced = items.length > 0 && newest > since;
+      return ok(items, {
+        ...(etag ? { etag } : {}),
+        ...(advanced ? { cursor: String(newest) } : {}),
+      });
     },
   };
 }
