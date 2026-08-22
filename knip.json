@@ -22,7 +22,8 @@
     "apps/worker": {
       "entry": [
         "src/seed/run.ts",
-        "src/cascade.ts"
+        "src/cascade.ts",
+        "src/watch.ts"
       ]
     }
   }

@@ -20,11 +20,16 @@ import { assertHonest } from '@tmos/guardrails';
 import {
   skimItems,
   createMemorySkimCache,
+  synthesize,
   type SkimItem,
   type SkimPort,
   type SkimInput,
   type SkimVerdict,
+  type FindingDraft,
 } from '@tmos/reason';
+import { createPostgresFindingStore } from '@tmos/adapters';
+
+import { createTransport } from './transport.js';
 import { db, sql, closePool } from '@tmos/db';
 
 const RUN = randomUUID();
@@ -165,6 +170,129 @@ async function logUsage(u: {
             ${u.cents}, ${u.outcome}, ${u.reason})`);
 }
 
+
+
+/* ── retrieval: a headline cannot be cited ─────────────────────────────────── */
+
+/**
+ * Fetch the article a promoted signal points at.
+ *
+ * Without this the pipeline cannot produce a Finding at all, and the reason is
+ * structural rather than a tuning problem: L0 requires every number and date in
+ * a claim to appear VERBATIM in a cited span, so a Finding needs text to quote.
+ * 36 of 46 Hacker News gig-economy signals have an empty body — a link post
+ * carries no story text — so the writer was being handed a headline and asked to
+ * quote from nothing, and correctly declined every time.
+ *
+ * This is the retrieval half of T3's workers, which the design puts here and
+ * nowhere else: `retrievedUrls` is the set L0 validates citations against, so a
+ * URL enters it ONLY if the fetch actually returned. A URL that failed, or that
+ * robots.txt refused, must never be citable — that is the difference between "we
+ * read this" and "we linked to it".
+ */
+function flatten(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function retrieve(
+  transport: ReturnType<typeof createTransport>,
+  url: string,
+): Promise<string | null> {
+  try {
+    const res = await transport.fetchText(url, { Accept: 'text/html,text/plain' });
+    if (res.status < 200 || res.status >= 300) return null;
+    const text = flatten(res.body);
+    // Under a few hundred characters this is a cookie wall or a redirect stub,
+    // not an article, and quoting it would cite a consent banner as evidence.
+    return text.length >= 400 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+/* ── T3 / synthesis: turn a promoted signal into a Finding ─────────────────── */
+
+interface WriterDraft {
+  claim: string;
+  so_what: string;
+  subject: string;
+  span: string;
+}
+
+/**
+ * The writer prompt.
+ *
+ * Three constraints are not style, they are the gates the mint will apply, and
+ * asking for them up front is cheaper than being refused:
+ *
+ *  - L0 checks every number and date in the claim appears VERBATIM in the cited
+ *    span. So the span must be quoted exactly, and the claim may not contain a
+ *    figure the span does not.
+ *  - The causal lint refuses "caused" below rung 2. A news item is rung 0.
+ *  - The honesty denylist is a legal boundary, not a tone preference.
+ */
+const WRITER_PROMPT = [
+  'You write short competitive-intelligence notes for Taskly, a home-services task marketplace in the Greater Toronto Area.',
+  '',
+  'You are given ONE news item. Write a note about it, or refuse it.',
+  '',
+  'RULES, all of which are checked mechanically after you answer:',
+  '1. "span" MUST be copied character-for-character from the item text. Do not paraphrase, tidy or shorten inside the quote.',
+  '2. Any number or date in "claim" MUST also appear in "span". If the span has no figures, the claim must have none.',
+  '3. Never write that something CAUSED something else. Say observed, associated with, or consistent with.',
+  '4. Never describe anyone as vetted, handpicked, background-checked, insured or guaranteed, and never promise anything.',
+  '5. "so_what" is what Taskly would DO about it, in one sentence. Not a summary of the news.',
+  '6. "subject" is the company or body the note is about, as "company:name" or "regulator:name".',
+  '',
+  'If the item does not support a note worth a founder reading, return {"skip":true} and nothing else.',
+  'Otherwise return {"claim":"...","so_what":"...","subject":"...","span":"..."}',
+].join('\n');
+
+async function writeDraft(
+  apiKey: string,
+  limits: BudgetLimits,
+  item: { title: string | null; body: string; url: string | null },
+): Promise<WriterDraft | null> {
+  const state = createBudgetState();
+  const res = await callGroq(
+    {
+      model: MODELS.strong,
+      json: true,
+      reasoningEffort: 'low',
+      maxTokens: 4_000,
+      messages: [
+        { role: 'system', content: WRITER_PROMPT },
+        { role: 'user', content: `TITLE: ${item.title ?? '(untitled)'}\n\nTEXT:\n${item.body.slice(0, 3_000)}` },
+      ],
+    },
+    { apiKey, state, limits, runId: RUN },
+  );
+
+  if (!res.ok) return null;
+  await logUsage({
+    outcome: 'allowed',
+    reason: 'synthesis',
+    tokensIn: res.usage.promptTokens,
+    tokensOut: res.usage.completionTokens,
+    cents: res.usage.costCents,
+  });
+
+  const parsed = JSON.parse(res.text) as Partial<WriterDraft> & { skip?: boolean };
+  if (parsed.skip || !parsed.claim || !parsed.so_what || !parsed.span || !parsed.subject) return null;
+  return { claim: parsed.claim, so_what: parsed.so_what, subject: parsed.subject, span: parsed.span };
+}
+
 async function main(): Promise<void> {
   assertPromptIsClean();
   console.log('honesty gate: live, and the system prompt passes it\n');
@@ -232,6 +360,94 @@ async function main(): Promise<void> {
     console.log(`  ${v.materiality.toFixed(2)}  ${(r?.title ?? '').slice(0, 88)}`);
     console.log(`        ${v.reason}`);
   }
+
+  /* ── synthesis: the promoted signals become Findings, or are refused ────── */
+
+  const store = createPostgresFindingStore();
+  const drafts: FindingDraft[] = [];
+  const retrievedUrls: string[] = [];
+  let skippedByWriter = 0;
+
+  const transport = createTransport();
+  let notRetrieved = 0;
+
+  for (const v of promoted) {
+    const r = byId.get(v.id);
+    if (!r?.url) continue;
+
+    // Retrieve BEFORE writing. The body we stored is feed metadata; a Finding
+    // must quote the article itself.
+    const article = await retrieve(transport, r.url);
+    if (!article) {
+      notRetrieved += 1;
+      continue;
+    }
+
+    const d = await writeDraft(env.GROQ_API_KEY ?? '', limits, { ...r, body: article });
+    if (!d) {
+      skippedByWriter += 1;
+      continue;
+    }
+
+    retrievedUrls.push(r.url);
+    drafts.push({
+      id: randomUUID(),
+      claim: d.claim,
+      so_what: d.so_what,
+      subject_refs: [d.subject],
+      evidence: [{ url: r.url, span: d.span, observed_at: r.observed_at ?? new Date().toISOString(), signal_id: r.id }],
+      // A single news item, read once. Not a governed query over our own facts,
+      // and emphatically not a verified metric.
+      basis: 'inferred_from_sources',
+      // Rung 0: this is an observation. Nothing here establishes a cause.
+      causal_rung: 0,
+      stakes: v.materiality >= 0.6 ? 'high' : 'medium',
+      region: 'ca',
+      // T1's materiality, standing in for the domain scorer. `scoring/domain.ts`
+      // encodes the real Taskly priors — the CAC ceiling, trust tiers, the GTA
+      // corridor — and is NOT wired here; using triage materiality is an honest
+      // approximation, not that scorer's answer.
+      domain_score: Math.max(0, Math.min(1, v.materiality)),
+    });
+  }
+
+  console.log(`\n[T3] retrieved ${promoted.length - notRetrieved}/${promoted.length} articles ` +
+              `(${notRetrieved} unreadable or refused), drafts written: ${drafts.length} ` +
+              `(writer declined ${skippedByWriter})`);
+  for (const denial of transport.drainDenials()) console.log(`      policy: ${denial}`);
+
+  if (drafts.length > 0) {
+    const result = synthesize(
+      { drafts, retrievedUrls, surface: 'internal' },
+      { honesty: assertHonest, now: () => new Date(), generatedBy: `agent:${MODELS.strong}@2026-08-22` },
+    );
+
+    console.log(`[T3] minted: ${result.emitted.length}   refused by the gates: ${result.refused.length}`);
+    for (const r of result.refused) {
+      console.log(`      ✗ ${r.reasons.map((x) => `${x.code}: ${x.detail}`).join('; ')}`);
+    }
+
+    let stored = 0;
+    let duplicate = 0;
+    for (const f of result.emitted) {
+      const put = await store.put(f);
+      if (put.ok && put.stored) stored += 1;
+      else if (put.ok) duplicate += 1;
+      else console.log(`      ✗ store refused: ${put.reason} ${put.detail}`);
+    }
+    console.log(`[T3] STORED: ${stored}   already held: ${duplicate}`);
+
+    for (const f of result.emitted) {
+      console.log(`\n  ── ${f.claim}`);
+      console.log(`     so what: ${f.so_what}`);
+      console.log(`     subject: ${f.subject_refs.join(', ')} · basis ${f.basis} · rung ${f.causal_rung} · ${f.stakes}`);
+      console.log(`     evidence: "${f.evidence[0]?.span.slice(0, 120)}"`);
+      console.log(`     source: ${f.evidence[0]?.source_url}`);
+    }
+  }
+
+  const total = await db().query<{ n: number }>(sql`select count(*)::int as n from finding`);
+  console.log(`\nfinding table now holds ${total[0]?.n ?? 0} rows`);
 
   const spend = await db().query<{ n: number; cents: string | null }>(sql`
     select count(*)::int as n, coalesce(sum(cost_cents), 0)::text as cents
