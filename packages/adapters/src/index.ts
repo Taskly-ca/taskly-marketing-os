@@ -60,6 +60,7 @@ export * from './pg/playbook-store.js';
 export * from './pg/outbox.js';
 export * from './pg/source-store.js';
 export * from './pg/finding-store.js';
+export * from './pg/entity-history.js';
 
 export * from './testing/conformance.js';
 export * from './testing/recording-executor.js';

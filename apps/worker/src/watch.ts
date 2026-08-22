@@ -25,7 +25,9 @@ import { randomUUID } from 'node:crypto';
 
 import { MODELS, callGroq, createBudgetState, loadEnv, type BudgetLimits } from '@tmos/shared';
 import {
+  createPostgresEntityHistory,
   createPostgresFactStore,
+  createPostgresFindingStore,
   createPostgresPredicateStore,
   entityByHardKey,
   insertEntity,
@@ -35,6 +37,7 @@ import { recordChange, type FactInput } from '@tmos/world';
 import { db, sql, closePool } from '@tmos/db';
 
 import { createTransport } from './transport.js';
+import { findingFromChange, type ChangeOutcome } from './change-finding.js';
 
 const RUN = randomUUID();
 
@@ -203,6 +206,10 @@ async function main(): Promise<void> {
   };
   const transport = createTransport();
   const factStore = createPostgresFactStore();
+  const findingStore = createPostgresFindingStore();
+  // Reads what we hold NOW — so every lookup must happen before `recordChange`
+  // writes the new value, or the observation becomes its own prior.
+  const history = createPostgresEntityHistory();
   const sourceId = await ensureSource();
   const now = new Date().toISOString();
 
@@ -210,6 +217,10 @@ async function main(): Promise<void> {
   const changes: string[] = [];
   let opened = 0;
   let unchanged = 0;
+  const outcomes: ChangeOutcome[] = [];
+  const minted: string[] = [];
+  let stored = 0;
+  let alreadyHeld = 0;
 
   for (const t of TARGETS) {
     process.stdout.write(`\n${t.company.padEnd(12)} ${t.url}\n`);
@@ -300,6 +311,49 @@ async function main(): Promise<void> {
         evidence: { url: t.url, snippet: String(a.span).slice(0, 500), extractorVersion: 'watch@2' },
       };
 
+      /**
+       * BEFORE the write, never after. `correlate` asks the world model what we
+       * currently hold; recording first would make this observation its own
+       * prior and classify every item as `restated` — a change detector that
+       * can never detect a change, and which looks perfectly healthy doing it.
+       */
+      const judged = await findingFromChange(
+        {
+          subjectRef: `company:${t.domain}`,
+          subjectLabel: t.company,
+          predicate: o.predicate,
+          predicateLabel: o.predicate.replace(/_/g, ' '),
+          value:
+            o.datatype === 'num'
+              ? { kind: 'num', num: Number(a.value) }
+              : { kind: 'text', text: String(a.value).trim().toLowerCase() },
+          observedAt: now,
+          evidence: [
+            {
+              signal_id: null,
+              // The fact does not exist yet — it is written on the next line —
+              // and citing one we have not inserted would be a dangling id.
+              fact_id: null,
+              source_url: t.url,
+              span: String(a.span).slice(0, 500),
+              observed_at: now,
+            },
+          ],
+          rootSourceId: sourceId,
+          sourceTier: 'first_party',
+          // A competitor's own page changing what it advertises is the highest
+          // stake this path can observe; nothing here is a legal exposure.
+          stakes: 'high',
+        },
+        {
+          history,
+          now: () => new Date(),
+          region: 'ca',
+          generatedBy: `agent:${MODELS.strong}@watch-2`,
+        },
+      );
+      outcomes.push(judged);
+
       const outcome = await recordChange(factStore, { ...input, validFrom: now }, now);
 
       const shown = o.datatype === 'num' ? `${a.value}${o.unit ? ' ' + o.unit : ''}` : String(a.value).trim().toLowerCase().slice(0, 60);
@@ -315,6 +369,23 @@ async function main(): Promise<void> {
           : before?.datatype === 'text' ? before.text.slice(0, 40) : '?';
         changes.push(`${t.company}: ${o.predicate} — was "${beforeShown}", now "${shown}" (${t.url})`);
         console.log(`  ! ${o.predicate.padEnd(34)} ${beforeShown} → ${shown}   *** CHANGED ***`);
+
+        if (judged.kind === 'minted') {
+          const put = await findingStore.put(judged.finding);
+          if (put.ok && put.stored) stored += 1;
+          else if (put.ok) alreadyHeld += 1;
+          else console.log(`      ✗ store refused: ${put.reason} ${put.detail}`);
+          minted.push(
+            `${judged.finding.claim}  [score ${judged.finding.domain_score.toFixed(2)}]\n` +
+              `        so what: ${judged.finding.so_what}`,
+          );
+        } else if (judged.kind === 'rejected') {
+          // The gates doing their job. Printed rather than swallowed: an L0
+          // rejection is the one place a fabricated number would have surfaced.
+          console.log(`      ✗ refused by a mint gate: ${judged.detail.slice(0, 160)}`);
+        } else if (judged.kind === 'refused') {
+          console.log(`      ✗ T2 declined to diff it: ${judged.reason}`);
+        }
       }
     }
   }
@@ -324,6 +395,17 @@ async function main(): Promise<void> {
   for (const c of changes) console.log(`  ! ${c}`);
   if (changes.length === 0 && opened > 0) {
     console.log('\nNo changes because this is the baseline. Every difference from here is a Finding.');
+  }
+  const tally = outcomes.reduce<Record<string, number>>((acc, o) => {
+    acc[o.kind] = (acc[o.kind] ?? 0) + 1;
+    return acc;
+  }, {});
+  console.log(
+    `\nT2: ${Object.entries(tally).map(([k, n]) => `${k}=${n}`).join(' ') || 'nothing observed'}`,
+  );
+  if (minted.length > 0) {
+    console.log(`\nFINDINGS MINTED (${stored} stored, ${alreadyHeld} already held):`);
+    for (const m of minted) console.log(`  ── ${m}`);
   }
   console.log(`cost: ${spent.toFixed(4)}¢`);
 
