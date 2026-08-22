@@ -23,6 +23,13 @@ type FactRow = {
   span: string | null; since: string; method: string;
 };
 type PredRow = { claim: string; p: string; resolves: string; resolver: string };
+type FindingRow = {
+  claim: string; so_what: string; subject: string; basis: string; score: string;
+  created: string; by: string; url: string | null; span: string | null;
+  /** Non-null ⇒ withdrawn. The reason is required by the store, and it is the
+   *  half of a correction that repairs trust — so it is what gets shown. */
+  supersede_reason: string | null;
+};
 type SourceRow = { name: string; tier: string; last_ok: string | null; fails: number };
 
 const esc = (s: unknown): string =>
@@ -32,7 +39,7 @@ const esc = (s: unknown): string =>
 const label = (p: string): string => p.replace(/_/g, ' ');
 
 function page(d: {
-  facts: FactRow[]; preds: PredRow[]; sources: SourceRow[];
+  facts: FactRow[]; preds: PredRow[]; sources: SourceRow[]; findingRows: FindingRow[];
   signals: number; events: number; entities: number; findings: number;
   spendCents: number; llmCalls: number; generated: string;
 }): string {
@@ -171,6 +178,18 @@ function page(d: {
   .callout{border:1px solid var(--line);border-left:2px solid var(--brass);
            background:var(--surface);padding:16px 20px;font-size:13.5px;color:var(--muted)}
   .callout strong{color:var(--ink)}
+  .finding{border:1px solid var(--line);border-left:2px solid var(--brass);
+    padding:14px 16px;margin:0 0 12px}
+  .finding--withdrawn{border-left-color:var(--line);opacity:.72}
+  .finding--withdrawn h3{text-decoration:line-through}
+  .finding h3{margin:0;font-size:15px;font-weight:600}
+  .finding .tag{display:inline-block;margin:0 0 6px;padding:1px 7px;border:1px solid var(--line);
+    font-size:10px;letter-spacing:.09em;text-transform:uppercase}
+  .finding .sowhat{margin:6px 0 0}
+  .finding .why{margin:8px 0 0;padding:8px 10px;border:1px dashed var(--line);font-size:12px}
+  .finding .meta{margin:8px 0 0;font-size:11px;letter-spacing:.04em;text-transform:uppercase;
+    color:var(--faint)}
+  .finding .e{margin:8px 0 0;font-size:12px}
   footer{margin-top:56px;padding-top:22px;border-top:1px solid var(--line);
          font-family:var(--mono);font-size:11.5px;color:var(--faint)}
   @media (max-width:640px){
@@ -229,11 +248,30 @@ function page(d: {
   <div class="band">
     <div class="band__head"><h2>Findings</h2></div>
     <p class="band__note">A Finding is raised when a measure changes, and carries both values, both
-      dates and both sources.</p>
-    <p class="callout"><strong>${d.findings === 0 ? 'None yet, and that is correct.' : `${d.findings} on record.`}</strong>
-      ${d.findings === 0
-        ? 'A change detector needs a before and an after. The baseline above is the before. From the next run onward, every difference is a Finding.'
-        : ''}</p>
+      dates and both sources. Since 2026-08-23 one is only stored after a second model of a
+      different family has been asked to refute it and could not — the two below predate that,
+      which is how the first of them came to be withdrawn. A withdrawn Finding stays on the page,
+      with the reason: a system that quietly stops showing what it got wrong has no track record
+      anyone can read.</p>
+    ${d.findingRows.length === 0
+      ? `<p class="callout"><strong>None yet, and that is correct.</strong>
+          A change detector needs a before and an after. The baseline above is the before.
+          From the next run onward, every difference is a Finding.</p>`
+      : d.findingRows.map((f) => `
+      <article class="finding${f.supersede_reason === null ? '' : ' finding--withdrawn'}">
+        <header>
+          ${f.supersede_reason === null ? '' : '<span class="tag">withdrawn</span>'}
+          <h3>${esc(f.claim)}</h3>
+        </header>
+        <p class="sowhat">${esc(f.so_what)}</p>
+        ${f.supersede_reason === null
+          ? ''
+          : `<p class="why"><strong>Why it was withdrawn.</strong> ${esc(f.supersede_reason)}</p>`}
+        <p class="meta">${esc(f.subject)} · ${esc(f.basis)} · relevance ${esc(f.score)} ·
+          ${esc(f.created)} · ${esc(f.by)}</p>
+        ${f.span ? `<p class="e"><q>${esc(f.span.slice(0, 220))}</q>
+          ${f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noopener">source</a>` : ''}</p>` : ''}
+      </article>`).join('')}
   </div>
 
   <footer>${d.llmCalls} model calls · ${d.spendCents.toFixed(4)}¢ · separate database from the marketplace</footer>
@@ -255,6 +293,23 @@ async function main(): Promise<void> {
            resolver->>'kind' as resolver
       from prediction where outcome is null order by p desc`);
 
+  /**
+   * Superseded rows are INCLUDED, newest first. The live-only index exists for
+   * the feed, not for this page: a system that quietly stops showing what it
+   * got wrong is a system whose track record cannot be read, and the ledger's
+   * whole argument is that the record is the asset.
+   */
+  const findingRows = await db().query<FindingRow>(sql`
+    select f.claim, f.so_what, array_to_string(f.subject_refs, ', ') as subject,
+           f.basis, to_char(f.domain_score, 'FM0.00') as score,
+           to_char(f.created_at, 'YYYY-MM-DD HH24:MI') as created,
+           f.generated_by as by,
+           f.evidence->0->>'source_url' as url,
+           f.evidence->0->>'span' as span,
+           f.supersede_reason
+      from finding f
+     order by f.created_at desc`);
+
   const sources = await db().query<SourceRow>(sql`
     select name, tier, to_char(last_ok_at,'YYYY-MM-DD HH24:MI') as last_ok,
            consecutive_failures as fails
@@ -272,7 +327,7 @@ async function main(): Promise<void> {
            (select count(*) from ai_usage_log)::int as calls`);
 
   const html = page({
-    facts, preds, sources,
+    facts, preds, sources, findingRows,
     signals: counts?.signals ?? 0,
     events: counts?.events ?? 0,
     entities: counts?.entities ?? 0,
@@ -285,7 +340,11 @@ async function main(): Promise<void> {
   const out = resolve(process.cwd(), 'briefing.html');
   writeFileSync(out, html, 'utf8');
   console.log(`wrote ${out}`);
-  console.log(`  ${facts.length} facts · ${preds.length} forecasts · ${sources.length} sources`);
+  const withdrawn = findingRows.filter((f) => f.supersede_reason !== null).length;
+  console.log(
+    `  ${facts.length} facts · ${preds.length} forecasts · ${sources.length} sources · ` +
+      `${findingRows.length} findings (${withdrawn} withdrawn)`,
+  );
   await closePool();
 }
 
