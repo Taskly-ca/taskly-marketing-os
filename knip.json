@@ -2,14 +2,27 @@
   "$schema": "https://unpkg.com/knip@5/schema.json",
   "workspaces": {
     ".": {
-      "entry": ["scripts/*.mjs"],
-      "project": ["scripts/**"]
+      "entry": [
+        "scripts/*.mjs"
+      ],
+      "project": [
+        "scripts/**"
+      ]
     },
     "packages/*": {
-      "project": ["src/**"]
+      "project": [
+        "src/**"
+      ]
     },
     "apps/*": {
-      "project": ["src/**"]
+      "project": [
+        "src/**"
+      ]
+    },
+    "apps/worker": {
+      "entry": [
+        "src/seed/run.ts"
+      ]
     }
   }
 }

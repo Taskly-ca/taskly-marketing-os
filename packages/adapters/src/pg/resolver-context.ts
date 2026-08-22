@@ -248,9 +248,34 @@ export function createResolverFetchers(options: ResolverFetchOptions = {}): Reso
     const cached = robotsByHost.get(host);
     if (cached !== undefined) return cached;
 
-    // The very first request to a host has no Crawl-delay to honour yet, so it
-    // uses our own floor; every later one uses the stricter of the two.
-    const res = await send(`${origin}/robots.txt`, host, effectiveDelayMs(null), 'text/plain');
+    // ── robots.txt redirects, and a redirect is not a refusal ────────────────
+    //
+    // RFC 9309 §2.3.1.2 says a client SHOULD follow at least five redirects for
+    // robots.txt, and in practice nearly every site needs it: www↔apex and
+    // http→https both land here. Treating the 301 as "unreadable" made this gate
+    // refuse hosts that were perfectly willing to be crawled — and because it
+    // fails CLOSED it looked like good manners rather than a bug. Found when
+    // five seed predictions were refused against a competitor whose robots.txt
+    // 301s from www to the apex and then answers 200.
+    //
+    // Each hop is re-gated through `checkHost`, so a redirect cannot be used to
+    // walk us onto a banned host.
+    let url = `${origin}/robots.txt`;
+    let hopHost = host;
+    let res = await send(url, hopHost, effectiveDelayMs(null), 'text/plain');
+
+    for (let redirects = 0; redirects < 5; redirects += 1) {
+      if (res.status < 300 || res.status >= 400 || !res.location) break;
+      const next = new URL(res.location, url);
+      const gate = checkHost(next.toString());
+      if (!gate.allowed) {
+        throw new AdapterError(`blocked by policy: ${gate.reason} (robots.txt redirect)`);
+      }
+      url = next.toString();
+      hopHost = next.hostname;
+      res = await send(url, hopHost, effectiveDelayMs(null), 'text/plain');
+    }
+
     if (res.status >= 400 && res.status < 500) {
       robotsByHost.set(host, null);
       return null;

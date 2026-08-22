@@ -189,11 +189,34 @@ export function createTransport(options: TransportOptions = {}): Transport {
       deny(`robots.txt for ${host} is unreachable (${error instanceof Error ? error.message : String(error)})`);
     }
 
-    // A redirected robots.txt is followed to its destination by re-entering
-    // here only if it stays on the same host; cross-host is treated as absent,
-    // which is what a crawler that cannot verify the rules should assume ONLY
-    // when the response was itself a 3xx to elsewhere. Simpler and stricter:
-    // anything that is not 2xx and not 4xx is a refusal.
+    // ── a redirect is not a refusal ─────────────────────────────────────────
+    //
+    // This used to be "anything that is not 2xx and not 4xx is a refusal",
+    // chosen as the simpler and stricter rule. It is stricter and it is wrong:
+    // RFC 9309 §2.3.1.2 says a client SHOULD follow at least five redirects for
+    // robots.txt, and www↔apex and http→https both land here, so the strict
+    // reading refuses hosts that are perfectly willing to be crawled. Because it
+    // fails CLOSED it reads as good manners instead of a bug — five seed
+    // predictions were refused against a competitor whose robots.txt 301s from
+    // www to the apex and then answers 200.
+    //
+    // Every hop is re-gated, so a redirect cannot walk us onto a banned host.
+    for (let redirects = 0; redirects < 5; redirects += 1) {
+      if (res.status < 300 || res.status >= 400) break;
+      const location = res.headers['location'] ?? res.headers['Location'];
+      if (!location) break;
+
+      const next = new URL(location, `${origin}/robots.txt`);
+      const gate = checkHost(next.toString());
+      if (!gate.allowed) deny(`robots.txt redirect blocked by policy: ${gate.reason}`);
+
+      try {
+        res = await send(next.toString(), next.hostname, effectiveDelayMs(null), { accept: 'text/plain' }, 'GET');
+      } catch (error) {
+        deny(`robots.txt for ${host} is unreachable (${error instanceof Error ? error.message : String(error)})`);
+      }
+    }
+
     if (res.status >= 400 && res.status < 500) {
       robotsByHost.set(host, NO_RULES);
       return NO_RULES;
