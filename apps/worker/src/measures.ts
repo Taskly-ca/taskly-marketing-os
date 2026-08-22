@@ -45,8 +45,20 @@
  * produces, so the check has to live here, in the instrument, not in L0.
  */
 
-/** How a measure's answer relates to the page it was read from. */
-export type AnswerKind = 'bounded' | 'quoted' | 'open';
+/**
+ * How a measure's answer relates to the document it was read from.
+ *
+ * `measured` is the fourth and the only one with no model in it: the value is
+ * computed from a machine-readable document — counting `<loc>` entries in a
+ * sitemap — so there is no span to choose and no judgement to drift. It is the
+ * answer to the problem `open` records, and it still does not publish yet, for
+ * a reason that is L0 rather than trust: the claim template renders the value
+ * ("…is now 61") and L0 requires every number in a claim to appear verbatim in
+ * a cited span, which a count derived from a document never does. The honest
+ * change-Finding for a sitemap names the added services instead — values that
+ * ARE in the span — and needs a purpose-built claim.
+ */
+export type AnswerKind = 'bounded' | 'quoted' | 'open' | 'measured';
 
 export interface Measure {
   readonly predicate: string;
@@ -123,8 +135,34 @@ export const COMMON: readonly Measure[] = [
   },
 ];
 
-/** True when a change in this measure may be published as a Finding. */
-export const publishes = (m: Measure): boolean => m.answer !== 'open';
+/**
+ * True when a change in this measure may be published as a Finding.
+ *
+ * The two exclusions are excluded for opposite reasons and it is worth not
+ * blurring them: `open` cannot be published because it is not trustworthy, and
+ * `measured` cannot be published YET because T2's claim template cannot cite it.
+ */
+export const publishes = (m: Measure): boolean => m.answer === 'bounded' || m.answer === 'quoted';
+
+/* ── the deterministic measures ───────────────────────────────────────────── */
+
+/** How many services the competitor's own sitemap lists. Counted, not judged. */
+export const SITEMAP_COUNT: Measure = {
+  predicate: 'sitemap_service_count',
+  datatype: 'num',
+  unit: 'count',
+  question: '(computed) how many service URLs the sitemap lists',
+  answer: 'measured',
+};
+
+/** Which ones, sorted — so a reordered sitemap is not a changed catalogue. */
+export const SITEMAP_CATALOGUE: Measure = {
+  predicate: 'sitemap_service_catalogue',
+  datatype: 'text',
+  unit: null,
+  question: '(computed) the sorted list of service slugs the sitemap lists',
+  answer: 'measured',
+};
 
 /* ── accepting an answer ──────────────────────────────────────────────────── */
 
@@ -163,6 +201,11 @@ export function acceptAnswer(measure: Measure, rawValue: unknown, span: string):
     }
     return { ok: true, value };
   }
+
+  // `measured` never reaches here in practice — nothing extracted it, so there
+  // is nothing to hold to a span — but a kind that fell through to the `open`
+  // branch by accident would be silently downgraded, so it is named.
+  if (measure.answer === 'measured') return { ok: true, value };
 
   if (measure.answer === 'quoted') {
     if (value === UNSTATED) return { ok: true, value };

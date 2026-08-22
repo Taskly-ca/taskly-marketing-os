@@ -39,7 +39,15 @@ import { db, sql, closePool } from '@tmos/db';
 
 import { createTransport } from './transport.js';
 import { findingFromChange, type ChangeOutcome } from './change-finding.js';
-import { COMMON, acceptAnswer, publishes, type Measure } from './measures.js';
+import {
+  COMMON,
+  SITEMAP_CATALOGUE,
+  SITEMAP_COUNT,
+  acceptAnswer,
+  publishes,
+  type Measure,
+} from './measures.js';
+import { readSitemap, type SitemapReading } from './sitemap.js';
 import { loadFactSheet } from './fact-sheet.js';
 import { createGroqVerifier, verifyForPublication } from './verifier.js';
 
@@ -67,6 +75,19 @@ interface WatchTarget {
    * the instrument, and an instrument that re-calibrates itself measures nothing.
    */
   readonly measures: readonly Measure[];
+  /**
+   * A sitemap worth reading, when the company publishes one that enumerates
+   * what it sells. Optional because most do not: TaskRabbit's lists marketing
+   * pages, and counting those would measure their content strategy.
+   */
+  readonly sitemap?: { readonly url: string; readonly prefix: string };
+}
+
+/** One value read off one document, from either half of a pass. */
+interface Reading {
+  readonly measure: Measure;
+  readonly value: string;
+  readonly span: string;
 }
 
 const TARGETS: readonly WatchTarget[] = [
@@ -83,6 +104,16 @@ const TARGETS: readonly WatchTarget[] = [
     url: 'https://jiffyondemand.com/',
     reading_for: 'Which services they offer, how they price, and which cities they name.',
     measures: COMMON,
+    /**
+     * The homepage flattens to 29 characters — it is assembled in the browser —
+     * so Jiffy contributed nothing at all until this. Their sitemap lists every
+     * service they sell as a URL, is server-rendered, and `robots.txt` allows
+     * everything except `/admin` and `/jobs/new`. Verified 2026-08-23.
+     */
+    sitemap: {
+      url: 'https://jiffyondemand.com/sitemap.xml',
+      prefix: 'https://jiffyondemand.com/service/',
+    },
   },
   {
     company: 'Handy',
@@ -178,6 +209,131 @@ async function ensureSource(): Promise<string> {
   return made[0]!.id;
 }
 
+/* ── the two halves of a pass ─────────────────────────────────────────────── */
+
+/** The sitemap, or null when it cannot be read. Never throws a run down. */
+async function readSitemapFor(
+  transport: ReturnType<typeof createTransport>,
+  sitemap: { url: string; prefix: string },
+): Promise<SitemapReading | null> {
+  try {
+    const res = await transport.fetchText(sitemap.url, { Accept: 'application/xml,text/xml' });
+    if (res.status < 200 || res.status >= 300) return null;
+    const reading = readSitemap(res.body, sitemap.prefix);
+    // Zero services is a parse that found nothing, not a company that sells
+    // nothing, and recording it would open a fact whose next reading looks like
+    // a company inventing an entire catalogue overnight.
+    return reading.count === 0 ? null : reading;
+  } catch {
+    return null;
+  }
+}
+
+/** The page as flat text, or null when there is too little of it to read. */
+async function readPage(
+  transport: ReturnType<typeof createTransport>,
+  url: string,
+): Promise<string | null> {
+  try {
+    const res = await transport.fetchText(url, { Accept: 'text/html' });
+    if (res.status < 200 || res.status >= 300) return null;
+    const text = flatten(res.body);
+    return text.length >= 400 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+interface Extraction {
+  readonly readings: Reading[];
+  readonly discarded: number;
+  readonly refusals: string[];
+  readonly spentCents: number;
+}
+
+/** The model half: ask the fixed questions, keep only the answers that hold up. */
+async function extractFromPage(
+  env: ReturnType<typeof loadEnv>,
+  limits: BudgetLimits,
+  t: WatchTarget,
+  page: string,
+): Promise<Extraction> {
+  const empty: Extraction = { readings: [], discarded: 0, refusals: [], spentCents: 0 };
+  const state = createBudgetState();
+  const asked = t.measures.filter((m) => m.answer !== 'measured');
+
+  const res = await callGroq(
+    {
+      model: MODELS.strong,
+      json: true,
+      reasoningEffort: 'low',
+      maxTokens: 4_000,
+      messages: [
+        { role: 'system', content: EXTRACT_PROMPT },
+        {
+          role: 'user',
+          content:
+            `COMPANY: ${t.company}\nREADING FOR: ${t.reading_for}\n\nQUESTIONS:\n` +
+            asked.map((m) => `- ${m.predicate}: ${m.question}`).join('\n') +
+            `\n\nPAGE:\n${page.slice(0, 12_000)}`,
+        },
+      ],
+    },
+    { apiKey: env.GROQ_API_KEY ?? '', state, limits, runId: RUN },
+  );
+  if (!res.ok) {
+    console.log(`  extraction failed: ${JSON.stringify(res).slice(0, 140)}`);
+    return empty;
+  }
+
+  await db().execute(sql`
+    insert into ai_usage_log (run_id, provider, model, tokens_in, tokens_out, cost_cents, outcome, reason)
+    values (${RUN}, 'groq', ${MODELS.strong}, ${res.usage.promptTokens}, ${res.usage.completionTokens},
+            ${res.usage.costCents}, 'allowed', 'competitor-watch')`);
+
+  const parsed = JSON.parse(res.text) as { answers?: Answer[] };
+  const byPredicate = new Map(asked.map((m) => [m.predicate, m]));
+  const haystack = page.toLowerCase();
+
+  const readings: Reading[] = [];
+  const refusals: string[] = [];
+  let discarded = 0;
+
+  for (const a of parsed.answers ?? []) {
+    if (!a?.predicate || !a?.span || a.value === undefined || a.value === null) {
+      discarded += 1;
+      continue;
+    }
+    // An invented predicate is discarded rather than stored: the instrument is
+    // the fixed set, and a stray key would be a fact nothing ever compares.
+    const measure = byPredicate.get(a.predicate);
+    if (!measure) {
+      discarded += 1;
+      continue;
+    }
+    // THE SPAN MUST ACTUALLY BE ON THE PAGE. Without this the evidence is
+    // whatever the model felt like typing, and every downstream citation
+    // inherits that. Cheap to check, and it is the difference between a sourced
+    // fact and a plausible one.
+    if (!haystack.includes(String(a.span).toLowerCase().slice(0, 60))) {
+      discarded += 1;
+      continue;
+    }
+    // And the ANSWER must be supported by the span it was given — off-menu for
+    // a bounded measure, absent from its own quote for a quoted one. The span
+    // being real does not make the answer read off it.
+    const verdict = acceptAnswer(measure, a.value, String(a.span));
+    if (!verdict.ok) {
+      discarded += 1;
+      refusals.push(`${measure.predicate.padEnd(34)} ${verdict.why}`);
+      continue;
+    }
+    readings.push({ measure, value: verdict.value, span: String(a.span) });
+  }
+
+  return { readings, discarded, refusals, spentCents: res.usage.costCents };
+}
+
 async function main(): Promise<void> {
   const env = loadEnv();
   const limits: BudgetLimits = {
@@ -228,94 +384,48 @@ async function main(): Promise<void> {
   for (const t of TARGETS) {
     process.stdout.write(`\n${t.company.padEnd(12)} ${t.url}\n`);
 
-    let page: string | null = null;
-    try {
-      const res = await transport.fetchText(t.url, { Accept: 'text/html' });
-      page = res.status >= 200 && res.status < 300 ? flatten(res.body) : null;
-      if (!page) console.log(`  unreadable: HTTP ${res.status}`);
-    } catch (err) {
-      console.log(`  refused: ${err instanceof Error ? err.message.slice(0, 90) : String(err)}`);
-      continue;
-    }
-    if (!page || page.length < 400) {
-      console.log('  too little text to read — not recording anything');
-      continue;
-    }
+    /**
+     * TWO SOURCES, ONE LOOP.
+     *
+     * The deterministic half runs FIRST and runs independently, which is the
+     * point of restructuring this: Jiffy's homepage flattens to 29 characters,
+     * so the old shape hit `continue` and the company contributed nothing at
+     * all — including the sitemap it publishes precisely for machines. A page
+     * a browser has to assemble is not a reason to skip a document that needs
+     * no assembling.
+     */
+    const readings: Reading[] = [];
 
-    const state = createBudgetState();
-    const res = await callGroq(
-      {
-        model: MODELS.strong,
-        json: true,
-        reasoningEffort: 'low',
-        maxTokens: 4_000,
-        messages: [
-          { role: 'system', content: EXTRACT_PROMPT },
-          {
-            role: 'user',
-            content:
-              `COMPANY: ${t.company}\nREADING FOR: ${t.reading_for}\n\nQUESTIONS:\n` +
-              t.measures.map((m) => `- ${m.predicate}: ${m.question}`).join('\n') +
-              `\n\nPAGE:\n${page.slice(0, 12_000)}`,
-          },
-        ],
-      },
-      { apiKey: env.GROQ_API_KEY ?? '', state, limits, runId: RUN },
-    );
-    if (!res.ok) {
-      console.log(`  extraction failed: ${JSON.stringify(res).slice(0, 140)}`);
-      continue;
-    }
-    spent += res.usage.costCents;
-    await db().execute(sql`
-      insert into ai_usage_log (run_id, provider, model, tokens_in, tokens_out, cost_cents, outcome, reason)
-      values (${RUN}, 'groq', ${MODELS.strong}, ${res.usage.promptTokens}, ${res.usage.completionTokens},
-              ${res.usage.costCents}, 'allowed', 'competitor-watch')`);
-
-    const parsed = JSON.parse(res.text) as { answers?: Answer[] };
-    const byPredicate = new Map(t.measures.map((m) => [m.predicate, m]));
-    const haystack = page.toLowerCase();
-
-    const answers: Array<Answer & { accepted: string }> = [];
-    let discarded = 0;
-    for (const a of parsed.answers ?? []) {
-      if (!a?.predicate || !a?.span || a.value === undefined || a.value === null) {
-        discarded += 1;
-        continue;
+    if (t.sitemap) {
+      const reading = await readSitemapFor(transport, t.sitemap);
+      if (reading === null) {
+        console.log('  sitemap unreadable — nothing recorded from it');
+      } else {
+        readings.push(
+          { measure: SITEMAP_COUNT, value: String(reading.count), span: reading.span },
+          { measure: SITEMAP_CATALOGUE, value: reading.catalogue, span: reading.span },
+        );
+        console.log(`  sitemap: ${reading.count} services listed (no model involved)`);
       }
-      // An invented predicate is discarded rather than stored: the instrument is
-      // the fixed set, and a stray key would be a fact nothing ever compares.
-      const measure = byPredicate.get(a.predicate);
-      if (!measure) {
-        discarded += 1;
-        continue;
-      }
-      // THE SPAN MUST ACTUALLY BE ON THE PAGE. Without this the evidence is
-      // whatever the model felt like typing, and every downstream citation
-      // inherits that. Cheap to check, and it is the difference between a
-      // sourced fact and a plausible one.
-      if (!haystack.includes(String(a.span).toLowerCase().slice(0, 60))) {
-        discarded += 1;
-        continue;
-      }
-      // And the ANSWER must be supported by the span it was given — off-menu for
-      // a bounded measure, absent from its own quote for a quoted one. The span
-      // being real does not make the answer read off it.
-      const verdict = acceptAnswer(measure, a.value, String(a.span));
-      if (!verdict.ok) {
-        discarded += 1;
-        console.log(`  ✗ ${measure.predicate.padEnd(34)} ${verdict.why}`);
-        continue;
-      }
-      answers.push({ ...a, accepted: verdict.value });
     }
 
-    if (discarded > 0) console.log(`  (${discarded} answer(s) discarded)`);
+    const page = await readPage(transport, t.url);
+    if (page === null) {
+      console.log('  page: too little text to read, or refused');
+    } else {
+      const extracted = await extractFromPage(env, limits, t, page);
+      spent += extracted.spentCents;
+      readings.push(...extracted.readings);
+      if (extracted.discarded > 0) console.log(`  (${extracted.discarded} answer(s) discarded)`);
+      for (const why of extracted.refusals) console.log(`  ✗ ${why}`);
+    }
+
+    if (readings.length === 0) continue;
 
     const entityId = await ensureEntity(t.company, t.domain);
 
-    for (const a of answers) {
-      const o = byPredicate.get(a.predicate)!;
+    for (const a of readings) {
+      const o = a.measure;
       // Never write a fact from raw text: the span is carried as evidence with
       // the URL, so every value can be traced to the sentence it came from.
       await ensurePredicate(o);
@@ -325,14 +435,18 @@ async function main(): Promise<void> {
         predicate: o.predicate,
         value:
           o.datatype === 'num'
-            ? { datatype: 'num', num: Number(a.accepted) }
-            : { datatype: 'text', text: a.accepted },
+            ? { datatype: 'num', num: Number(a.value) }
+            : { datatype: 'text', text: a.value },
         validFrom: now,
         sourceId,
         observedAt: now,
         confidence: 0.9,
         method: 'llm_extract',
-        evidence: { url: t.url, snippet: String(a.span).slice(0, 500), extractorVersion: 'watch@2' },
+        evidence: {
+          url: a.measure.answer === 'measured' ? (t.sitemap?.url ?? t.url) : t.url,
+          snippet: a.span.slice(0, 500),
+          extractorVersion: a.measure.answer === 'measured' ? 'sitemap@1' : 'watch@3',
+        },
       };
 
       /**
@@ -351,8 +465,8 @@ async function main(): Promise<void> {
           predicateLabel: o.predicate.replace(/_/g, ' '),
           value:
             o.datatype === 'num'
-              ? { kind: 'num', num: Number(a.accepted) }
-              : { kind: 'text', text: a.accepted },
+              ? { kind: 'num', num: Number(a.value) }
+              : { kind: 'text', text: a.value },
           observedAt: now,
           evidence: [
             {
@@ -360,8 +474,8 @@ async function main(): Promise<void> {
               // The fact does not exist yet — it is written on the next line —
               // and citing one we have not inserted would be a dangling id.
               fact_id: null,
-              source_url: t.url,
-              span: String(a.span).slice(0, 500),
+              source_url: a.measure.answer === 'measured' ? (t.sitemap?.url ?? t.url) : t.url,
+              span: a.span.slice(0, 500),
               observed_at: now,
             },
           ],
@@ -385,7 +499,7 @@ async function main(): Promise<void> {
 
       const outcome = await recordChange(factStore, { ...input, validFrom: now }, now);
 
-      const shown = o.datatype === 'num' ? `${a.accepted}${o.unit ? ' ' + o.unit : ''}` : a.accepted.slice(0, 60);
+      const shown = o.datatype === 'num' ? `${a.value}${o.unit ? ' ' + o.unit : ''}` : a.value.slice(0, 60);
       if (outcome.kind === 'opened') {
         opened += 1;
         console.log(`  + ${o.predicate.padEnd(34)} ${shown}`);
