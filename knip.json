@@ -21,7 +21,8 @@
     },
     "apps/worker": {
       "entry": [
-        "src/seed/run.ts"
+        "src/seed/run.ts",
+        "src/cascade.ts"
       ]
     }
   }

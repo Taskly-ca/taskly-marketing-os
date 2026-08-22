@@ -74,9 +74,15 @@ importers:
       '@tmos/gate':
         specifier: workspace:*
         version: link:../../packages/gate
+      '@tmos/guardrails':
+        specifier: workspace:*
+        version: link:../../packages/guardrails
       '@tmos/intel':
         specifier: workspace:*
         version: link:../../packages/intel
+      '@tmos/reason':
+        specifier: workspace:*
+        version: link:../../packages/reason
       '@tmos/shared':
         specifier: workspace:*
         version: link:../../packages/shared

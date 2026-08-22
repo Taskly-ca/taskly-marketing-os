@@ -8,8 +8,14 @@ import { z } from 'zod';
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
-  SUPABASE_URL: z.url(),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  // Both OPTIONAL, because nothing in TMOS uses them. Every database access
+  // goes through DATABASE_URL and a `pg` connection (@tmos/db) — the world model
+  // needs tstzrange, GiST and recursive CTEs that PostgREST cannot express, so
+  // the service-role key has no call site. Requiring it meant the worker could
+  // not boot without a credential nobody has, which is a boot failure that
+  // teaches the operator to paste a placeholder — the opposite of fail-fast.
+  SUPABASE_URL: z.url().optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
 
   // LLM providers — at least one must be present; checked below.
   GROQ_API_KEY: z.string().min(1).optional(),
@@ -32,8 +38,27 @@ const schema = z.object({
 
 export type Env = z.infer<typeof schema>;
 
+/**
+ * An EMPTY value is ABSENT, not present-and-invalid.
+ *
+ * Node's `--env-file` materialises every declared-but-blank line in a `.env` as
+ * `''`, and a `.env` copied from `.env.example` is mostly blank lines. Without
+ * this, `z.string().min(1).optional()` rejects them — so the process dies at
+ * boot listing four credentials the operator does not have and does not need,
+ * and the lesson learned is "paste a placeholder", which defeats the point of
+ * validating at all. `vitest.live.config.ts` already had to solve this in its
+ * own parser; the rule belongs here, once.
+ */
+function omitEmpty(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(source)) {
+    if (v !== undefined && v.trim() !== '') out[k] = v;
+  }
+  return out;
+}
+
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
-  const parsed = schema.safeParse(source);
+  const parsed = schema.safeParse(omitEmpty(source));
   if (!parsed.success) {
     throw new Error(`Invalid environment:\n${z.prettifyError(parsed.error)}`);
   }
