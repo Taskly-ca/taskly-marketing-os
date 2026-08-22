@@ -33,12 +33,15 @@ import {
   insertEntity,
   attachHardKey,
 } from '@tmos/adapters';
+import { passesVerification } from '@tmos/reason';
 import { recordChange, type FactInput } from '@tmos/world';
 import { db, sql, closePool } from '@tmos/db';
 
 import { createTransport } from './transport.js';
 import { findingFromChange, type ChangeOutcome } from './change-finding.js';
 import { COMMON, acceptAnswer, publishes, type Measure } from './measures.js';
+import { loadFactSheet } from './fact-sheet.js';
+import { createGroqVerifier, verifyForPublication } from './verifier.js';
 
 const RUN = randomUUID();
 
@@ -198,6 +201,26 @@ async function main(): Promise<void> {
   /** `recorded_only` is not a `ChangeOutcome`: nothing was correlated, on
    *  purpose, and the tally must show that rather than an absence. */
   const outcomes: Array<ChangeOutcome | { kind: 'recorded_only'; predicate: string }> = [];
+  /**
+   * Loaded BEFORE the first page is fetched, and allowed to throw.
+   *
+   * A missing FACT-SHEET is a missing gate, and finding that out after three
+   * model calls and a Finding is worse than finding it out at second zero — the
+   * run would have to be thrown away anyway. Fail closed, early, cheaply.
+   */
+  const facts = loadFactSheet();
+  const verifier = createGroqVerifier({
+    apiKey: env.GROQ_API_KEY ?? '',
+    limits,
+    runId: RUN,
+    onUsage: async (u) => {
+      await db().execute(sql`
+        insert into ai_usage_log (run_id, provider, model, tokens_in, tokens_out, cost_cents, outcome, reason)
+        values (${RUN}, 'groq', ${MODELS.verifier}, ${u.promptTokens}, ${u.completionTokens},
+                ${u.costCents}, ${u.outcome}, ${u.reason})`);
+    },
+  });
+  let refused = 0;
   const minted: string[] = [];
   let stored = 0;
   let alreadyHeld = 0;
@@ -379,13 +402,39 @@ async function main(): Promise<void> {
         if (judged === null) {
           console.log('      · recorded, not published: an open measure cannot tell drift from change');
         } else if (judged.kind === 'minted') {
+          /**
+           * NOTHING SHIPS UNVERIFIED. A second model, of a different family by
+           * requirement, is asked to REFUTE the claim using only the spans the
+           * reader will see — and `passesVerification` is false for `uncertain`,
+           * so a timeout or a malformed answer withholds the Finding rather
+           * than waving it through.
+           */
+          const check = await verifyForPublication(
+            {
+              claim: judged.finding.claim,
+              evidence: judged.finding.evidence,
+              generated_by: judged.finding.generated_by,
+            },
+            { verifier, retrievedUrls: [t.url], facts },
+          );
+
+          if (!passesVerification(check)) {
+            refused += 1;
+            console.log(
+              `      ✗ ${check.verdict} at ${check.stage}: ${check.reason.slice(0, 150)}` +
+                (check.needs_human ? '  → needs a human' : ''),
+            );
+            continue;
+          }
+
           const put = await findingStore.put(judged.finding);
           if (put.ok && put.stored) stored += 1;
           else if (put.ok) alreadyHeld += 1;
           else console.log(`      ✗ store refused: ${put.reason} ${put.detail}`);
           minted.push(
             `${judged.finding.claim}  [score ${judged.finding.domain_score.toFixed(2)}]\n` +
-              `        so what: ${judged.finding.so_what}`,
+              `        so what: ${judged.finding.so_what}\n` +
+              `        verified: ${check.verifier?.model} — ${check.reason.slice(0, 110)}`,
           );
         } else if (judged.kind === 'rejected') {
           // The gates doing their job. Printed rather than swallowed: an L0
@@ -411,6 +460,9 @@ async function main(): Promise<void> {
   console.log(
     `\nT2: ${Object.entries(tally).map(([k, n]) => `${k}=${n}`).join(' ') || 'nothing observed'}`,
   );
+  if (refused > 0) {
+    console.log(`${refused} change(s) withheld by the verifier — refuted or unproven, never silently shipped`);
+  }
   if (minted.length > 0) {
     console.log(`\nFINDINGS MINTED (${stored} stored, ${alreadyHeld} already held):`);
     for (const m of minted) console.log(`  ── ${m}`);

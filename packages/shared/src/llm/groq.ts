@@ -100,8 +100,18 @@ export interface GroqRequest {
    * it triages — and, worse, can exhaust `maxTokens` mid-thought and return
    * nothing, which with `json: true` surfaces as a 400 `json_validate_failed`
    * rather than as a short answer. Tiers that triage should ask for 'low'.
+   *
+   * THE ACCEPTED VALUES DIFFER BY MODEL and Groq rejects the wrong one with a
+   * 400 rather than ignoring it. gpt-oss takes `low | medium | high`; qwen3.6
+   * takes `none | default` and refuses `low`. That is not a detail: the
+   * verifier is a qwen by requirement, and a 400 there returns `uncertain`,
+   * which withholds every Finding while the pipeline reports no errors. Found
+   * exactly that way, on the verifier's first live call, 2026-08-23.
+   *
+   * The union is therefore the union of both vocabularies, and choosing a value
+   * the model accepts belongs to the caller that chose the model.
    */
-  reasoningEffort?: 'low' | 'medium' | 'high';
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'default';
 }
 
 export interface GroqUsage {
