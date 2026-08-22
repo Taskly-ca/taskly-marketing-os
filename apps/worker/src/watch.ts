@@ -38,6 +38,7 @@ import { db, sql, closePool } from '@tmos/db';
 
 import { createTransport } from './transport.js';
 import { findingFromChange, type ChangeOutcome } from './change-finding.js';
+import { COMMON, acceptAnswer, publishes, type Measure } from './measures.js';
 
 const RUN = randomUUID();
 
@@ -51,8 +52,8 @@ interface WatchTarget {
   /** What this page is being read FOR. Goes in the prompt. */
   readonly reading_for: string;
   /**
-   * The measures to answer, FIXED. Not a suggestion — the model is asked to fill
-   * these in and nothing else.
+   * The measures to answer, FIXED — see `measures.ts`, which also owns the rule
+   * that only a bounded or quoted answer may be published as a change.
    *
    * The first version of this asked the model to record "what the page states"
    * and let it choose the measures. Run one returned one predicate for Handy and
@@ -64,29 +65,6 @@ interface WatchTarget {
    */
   readonly measures: readonly Measure[];
 }
-
-interface Measure {
-  readonly predicate: string;
-  readonly datatype: 'num' | 'text';
-  readonly unit: string | null;
-  /** Asked verbatim. Must have one answer the page either states or does not. */
-  readonly question: string;
-}
-
-const COMMON: readonly Measure[] = [
-  { predicate: 'service_categories_count', datatype: 'num', unit: 'count',
-    question: 'How many distinct service categories does this page list? Count them.' },
-  { predicate: 'serves_canada', datatype: 'text', unit: null,
-    question: 'Does the page indicate service in Canada? Answer exactly yes, no, or unstated.' },
-  { predicate: 'cities_listed', datatype: 'text', unit: null,
-    question: 'Which cities does the page name, comma-separated and alphabetised? If none, answer none.' },
-  { predicate: 'lowest_advertised_price', datatype: 'text', unit: null,
-    question: 'What is the lowest price the page advertises, with its currency and unit exactly as written? If no price is shown, answer unstated.' },
-  { predicate: 'offers_snow_removal', datatype: 'text', unit: null,
-    question: 'Does the page list snow removal? Answer exactly yes, no, or unstated.' },
-  { predicate: 'offers_cleaning', datatype: 'text', unit: null,
-    question: 'Does the page list house or home cleaning? Answer exactly yes, no, or unstated.' },
-];
 
 const TARGETS: readonly WatchTarget[] = [
   {
@@ -217,7 +195,9 @@ async function main(): Promise<void> {
   const changes: string[] = [];
   let opened = 0;
   let unchanged = 0;
-  const outcomes: ChangeOutcome[] = [];
+  /** `recorded_only` is not a `ChangeOutcome`: nothing was correlated, on
+   *  purpose, and the tally must show that rather than an absence. */
+  const outcomes: Array<ChangeOutcome | { kind: 'recorded_only'; predicate: string }> = [];
   const minted: string[] = [];
   let stored = 0;
   let alreadyHeld = 0;
@@ -273,20 +253,41 @@ async function main(): Promise<void> {
     const byPredicate = new Map(t.measures.map((m) => [m.predicate, m]));
     const haystack = page.toLowerCase();
 
-    const answers = (parsed.answers ?? []).filter((a) => {
-      if (!a?.predicate || !a?.span || a.value === undefined || a.value === null) return false;
+    const answers: Array<Answer & { accepted: string }> = [];
+    let discarded = 0;
+    for (const a of parsed.answers ?? []) {
+      if (!a?.predicate || !a?.span || a.value === undefined || a.value === null) {
+        discarded += 1;
+        continue;
+      }
       // An invented predicate is discarded rather than stored: the instrument is
       // the fixed set, and a stray key would be a fact nothing ever compares.
-      if (!byPredicate.has(a.predicate)) return false;
+      const measure = byPredicate.get(a.predicate);
+      if (!measure) {
+        discarded += 1;
+        continue;
+      }
       // THE SPAN MUST ACTUALLY BE ON THE PAGE. Without this the evidence is
       // whatever the model felt like typing, and every downstream citation
       // inherits that. Cheap to check, and it is the difference between a
       // sourced fact and a plausible one.
-      return haystack.includes(String(a.span).toLowerCase().slice(0, 60));
-    });
+      if (!haystack.includes(String(a.span).toLowerCase().slice(0, 60))) {
+        discarded += 1;
+        continue;
+      }
+      // And the ANSWER must be supported by the span it was given — off-menu for
+      // a bounded measure, absent from its own quote for a quoted one. The span
+      // being real does not make the answer read off it.
+      const verdict = acceptAnswer(measure, a.value, String(a.span));
+      if (!verdict.ok) {
+        discarded += 1;
+        console.log(`  ✗ ${measure.predicate.padEnd(34)} ${verdict.why}`);
+        continue;
+      }
+      answers.push({ ...a, accepted: verdict.value });
+    }
 
-    const discarded = (parsed.answers ?? []).length - answers.length;
-    if (discarded > 0) console.log(`  (${discarded} answer(s) discarded: unknown predicate or span not on the page)`);
+    if (discarded > 0) console.log(`  (${discarded} answer(s) discarded)`);
 
     const entityId = await ensureEntity(t.company, t.domain);
 
@@ -301,8 +302,8 @@ async function main(): Promise<void> {
         predicate: o.predicate,
         value:
           o.datatype === 'num'
-            ? { datatype: 'num', num: Number(a.value) }
-            : { datatype: 'text', text: String(a.value).trim().toLowerCase() },
+            ? { datatype: 'num', num: Number(a.accepted) }
+            : { datatype: 'text', text: a.accepted },
         validFrom: now,
         sourceId,
         observedAt: now,
@@ -317,7 +318,9 @@ async function main(): Promise<void> {
        * prior and classify every item as `restated` — a change detector that
        * can never detect a change, and which looks perfectly healthy doing it.
        */
-      const judged = await findingFromChange(
+      const judged: ChangeOutcome | null = !publishes(o)
+        ? null
+        : await findingFromChange(
         {
           subjectRef: `company:${t.domain}`,
           subjectLabel: t.company,
@@ -325,8 +328,8 @@ async function main(): Promise<void> {
           predicateLabel: o.predicate.replace(/_/g, ' '),
           value:
             o.datatype === 'num'
-              ? { kind: 'num', num: Number(a.value) }
-              : { kind: 'text', text: String(a.value).trim().toLowerCase() },
+              ? { kind: 'num', num: Number(a.accepted) }
+              : { kind: 'text', text: a.accepted },
           observedAt: now,
           evidence: [
             {
@@ -349,14 +352,17 @@ async function main(): Promise<void> {
           history,
           now: () => new Date(),
           region: 'ca',
-          generatedBy: `agent:${MODELS.strong}@watch-2`,
+          generatedBy: `agent:${MODELS.strong}@watch-3`,
         },
       );
-      outcomes.push(judged);
+      // An open measure is still recorded — the fact is written below — but it
+      // is counted here as what it is: a reading we cannot publish a change
+      // from, rather than a change we happened not to find.
+      outcomes.push(judged ?? { kind: 'recorded_only', predicate: o.predicate });
 
       const outcome = await recordChange(factStore, { ...input, validFrom: now }, now);
 
-      const shown = o.datatype === 'num' ? `${a.value}${o.unit ? ' ' + o.unit : ''}` : String(a.value).trim().toLowerCase().slice(0, 60);
+      const shown = o.datatype === 'num' ? `${a.accepted}${o.unit ? ' ' + o.unit : ''}` : a.accepted.slice(0, 60);
       if (outcome.kind === 'opened') {
         opened += 1;
         console.log(`  + ${o.predicate.padEnd(34)} ${shown}`);
@@ -370,7 +376,9 @@ async function main(): Promise<void> {
         changes.push(`${t.company}: ${o.predicate} — was "${beforeShown}", now "${shown}" (${t.url})`);
         console.log(`  ! ${o.predicate.padEnd(34)} ${beforeShown} → ${shown}   *** CHANGED ***`);
 
-        if (judged.kind === 'minted') {
+        if (judged === null) {
+          console.log('      · recorded, not published: an open measure cannot tell drift from change');
+        } else if (judged.kind === 'minted') {
           const put = await findingStore.put(judged.finding);
           if (put.ok && put.stored) stored += 1;
           else if (put.ok) alreadyHeld += 1;
