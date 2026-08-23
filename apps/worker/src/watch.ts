@@ -54,6 +54,7 @@ import {
   type WatchTarget,
 } from '@tmos/packs';
 import { quoteSlugs, readSitemap, type SitemapReading } from './sitemap.js';
+import { createRenderer, type RenderOutcome } from './render.js';
 import { catalogueClaim } from './catalogue-finding.js';
 import { loadFactSheet } from './fact-sheet.js';
 import { createGroqVerifier, verifyForPublication } from './verifier.js';
@@ -216,19 +217,47 @@ async function readSitemapFor(
   }
 }
 
-/** The page as flat text, or null when there is too little of it to read. */
+/**
+ * The page as flat text, or null when there is too little of it to read.
+ *
+ * The cheap fetch first, always: it is free, it is fast, and it is what most
+ * pages need. A rendered fetch runs a browser and costs money, so paying for
+ * one on a document that arrived complete buys the same string twice.
+ *
+ * `render` is only reached when the cheap path came back too short — which is
+ * also the only signal we have that a page is assembled rather than served.
+ * The robots gate has already run inside `transport.fetchText`, so a host we
+ * are disallowed from never reaches here: routing a refused fetch through a
+ * third party is the definition of working around the gate.
+ */
 async function readPage(
   transport: ReturnType<typeof createTransport>,
   url: string,
+  render: ((url: string) => Promise<RenderOutcome>) | null,
 ): Promise<string | null> {
+  let allowed = false;
   try {
     const res = await transport.fetchText(url, { Accept: 'text/html' });
-    if (res.status < 200 || res.status >= 300) return null;
-    const text = flatten(res.body);
-    return text.length >= 400 ? text : null;
+    if (res.status >= 200 && res.status < 300) {
+      allowed = true;
+      const text = flatten(res.body);
+      if (text.length >= 400) return text;
+    }
   } catch {
+    // Refused by policy or unreachable. Either way the rendered path must not
+    // be tried: one of those is a gate and the other is a host that is down.
     return null;
   }
+
+  if (!allowed || render === null) return null;
+
+  const rendered = await render(url);
+  if (rendered.ok) {
+    console.log('  page: assembled in the browser — read through the renderer');
+    return rendered.text;
+  }
+  console.log(`  page: renderer could not read it either — ${rendered.detail}`);
+  return null;
 }
 
 interface Extraction {
@@ -355,6 +384,9 @@ export async function watchCompetitors(
     maxToolDepth: env.TMOS_MAX_TOOL_DEPTH,
   };
   const transport = createTransport();
+  // Null without a key: the pass reports the page as unreadable exactly as it
+  // does today, and nothing else changes.
+  const render = createRenderer(process.env);
   const factStore = createPostgresFactStore();
   const findingStore = createPostgresFindingStore();
   // Reads what we hold NOW — so every lookup must happen before `recordChange`
@@ -429,7 +461,7 @@ export async function watchCompetitors(
       }
     }
 
-    const page = await readPage(transport, t.url);
+    const page = await readPage(transport, t.url, render);
     if (page === null) {
       console.log('  page: too little text to read, or refused');
     } else {
