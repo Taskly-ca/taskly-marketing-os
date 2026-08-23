@@ -44,50 +44,21 @@ import {
   type ChangeOutcome,
   type ClaimWriter,
 } from './change-finding.js';
+import { SITEMAP_CATALOGUE, SITEMAP_COUNT, acceptAnswer, publishes } from './measures.js';
 import {
-  COMMON,
-  SITEMAP_CATALOGUE,
-  SITEMAP_COUNT,
-  acceptAnswer,
-  publishes,
+  DEFAULT_PACK_ID,
+  PACKS,
+  packById,
+  type DomainPack,
   type Measure,
-} from './measures.js';
+  type WatchTarget,
+} from '@tmos/packs';
 import { quoteSlugs, readSitemap, type SitemapReading } from './sitemap.js';
 import { catalogueClaim } from './catalogue-finding.js';
 import { loadFactSheet } from './fact-sheet.js';
 import { createGroqVerifier, verifyForPublication } from './verifier.js';
 
 const RUN = randomUUID();
-
-interface WatchTarget {
-  /** Display name, and the entity we resolve against. */
-  readonly company: string;
-  /** The registrable domain — migration 001's hard identity key, so an exact
-   *  match auto-merges with no scoring at all. */
-  readonly domain: string;
-  readonly url: string;
-  /** What this page is being read FOR. Goes in the prompt. */
-  readonly reading_for: string;
-  /**
-   * The measures to answer, FIXED — see `measures.ts`, which also owns the rule
-   * that only a bounded or quoted answer may be published as a change.
-   *
-   * The first version of this asked the model to record "what the page states"
-   * and let it choose the measures. Run one returned one predicate for Handy and
-   * run two returned four different ones, on an unchanged page. A change
-   * detector whose measures drift cannot detect change: every run mints new
-   * facts, nothing is ever comparable, and a real move would be indistinguishable
-   * from the extractor having a different idea that morning. The question set is
-   * the instrument, and an instrument that re-calibrates itself measures nothing.
-   */
-  readonly measures: readonly Measure[];
-  /**
-   * A sitemap worth reading, when the company publishes one that enumerates
-   * what it sells. Optional because most do not: TaskRabbit's lists marketing
-   * pages, and counting those would measure their content strategy.
-   */
-  readonly sitemap?: { readonly url: string; readonly prefix: string };
-}
 
 /** One value read off one document, from either half of a pass. */
 interface Reading {
@@ -101,40 +72,6 @@ interface Reading {
    */
   readonly writeClaim?: ClaimWriter;
 }
-
-const TARGETS: readonly WatchTarget[] = [
-  {
-    company: 'TaskRabbit',
-    domain: 'taskrabbit.ca',
-    url: 'https://www.taskrabbit.ca/services',
-    reading_for: 'Which services they offer in Canada, and in which cities.',
-    measures: COMMON,
-  },
-  {
-    company: 'Jiffy',
-    domain: 'jiffyondemand.com',
-    url: 'https://jiffyondemand.com/',
-    reading_for: 'Which services they offer, how they price, and which cities they name.',
-    measures: COMMON,
-    /**
-     * The homepage flattens to 29 characters — it is assembled in the browser —
-     * so Jiffy contributed nothing at all until this. Their sitemap lists every
-     * service they sell as a URL, is server-rendered, and `robots.txt` allows
-     * everything except `/admin` and `/jobs/new`. Verified 2026-08-23.
-     */
-    sitemap: {
-      url: 'https://jiffyondemand.com/sitemap.xml',
-      prefix: 'https://jiffyondemand.com/service/',
-    },
-  },
-  {
-    company: 'Handy',
-    domain: 'handy.com',
-    url: 'https://www.handy.com/',
-    reading_for: 'Whether they serve Canada at all, what they offer, and how they price.',
-    measures: COMMON,
-  },
-];
 
 const EXTRACT_PROMPT = [
   'You read a competitor web page and ANSWER A FIXED SET OF QUESTIONS about it.',
@@ -384,7 +321,33 @@ async function extractFromPage(
   return { readings, discarded, refusals, spentCents: res.usage.costCents };
 }
 
-export async function watchCompetitors(): Promise<void> {
+/**
+ * Which domain this pass is watching.
+ *
+ * No silent fallback to the default when an id is given and not found: running
+ * the wrong domain quietly is worse than not running, and the two look
+ * identical in the output.
+ */
+export function selectPack(argv: readonly string[]): DomainPack {
+  const flag = argv.find((a) => a === '--pack' || a.startsWith('--pack='));
+  const id =
+    flag === undefined
+      ? DEFAULT_PACK_ID
+      : flag.includes('=')
+        ? flag.slice(flag.indexOf('=') + 1)
+        : (argv[argv.indexOf(flag) + 1] ?? '');
+
+  const pack = packById(id);
+  if (pack === undefined) {
+    throw new Error(`unknown pack "${id}" — one of ${PACKS.map((p) => p.id).join(', ')}`);
+  }
+  return pack;
+}
+
+export async function watchCompetitors(
+  pack: DomainPack = selectPack(process.argv.slice(2)),
+): Promise<void> {
+  process.stdout.write(`pack: ${pack.id} (${pack.region})\n`);
   const env = loadEnv();
   const limits: BudgetLimits = {
     maxRunTokens: env.TMOS_MAX_RUN_TOKENS,
@@ -431,7 +394,7 @@ export async function watchCompetitors(): Promise<void> {
   let stored = 0;
   let alreadyHeld = 0;
 
-  for (const t of TARGETS) {
+  for (const t of pack.targets) {
     process.stdout.write(`\n${t.company.padEnd(12)} ${t.url}\n`);
 
     /**

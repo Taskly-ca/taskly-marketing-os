@@ -25,17 +25,13 @@
  * carries an explicit no-data-mining notice); and the feed answers a question
  * this business actually has.
  */
-import {
-  createGdeltCollector,
-  createHnCollector,
-  createRssCollector,
-  credentialedCollectors,
-  type Collector,
-} from '@tmos/collectors';
+import { credentialedCollectors, type Collector } from '@tmos/collectors';
 import type { Region } from '@tmos/contracts';
+import { marketingCanada, type DomainPack } from '@tmos/packs';
 
 /** `source.tier` — the rubric dimension that stops an agent preferring a farm. */
-export type SourceTier = 'first_party' | 'primary' | 'trade' | 'aggregator' | 'farm';
+export type { SourceTier } from '@tmos/packs';
+type SourceTier = 'first_party' | 'primary' | 'trade' | 'aggregator' | 'farm';
 
 export interface WatchEntry {
   readonly collector: Collector;
@@ -44,65 +40,6 @@ export interface WatchEntry {
   /** The question this source is FOR — not the terms it uses. */
   readonly question: string;
 }
-
-const KEYLESS: WatchEntry[] = [
-  {
-    collector: createRssCollector('https://globalnews.ca/toronto/feed/', 'rss:globalnews-toronto'),
-    tier: 'aggregator',
-    region: 'ca',
-    question: 'Is anything moving in the GTA that a home-services marketplace would respond to?',
-  },
-  {
-    collector: createRssCollector('https://financialpost.com/feed', 'rss:financial-post'),
-    tier: 'aggregator',
-    region: 'ca',
-    question: 'Is the Canadian consumer-spending and housing picture shifting under us?',
-  },
-  {
-    collector: createRssCollector('https://betakit.com/feed/', 'rss:betakit'),
-    tier: 'trade',
-    region: 'ca',
-    question: 'Has a Canadian marketplace competitor raised, launched, pivoted or died?',
-  },
-  {
-    /**
-     * THE CANARY, AND IT IS SUPPOSED TO FAIL.
-     *
-     * HPAC is the Canadian heating/plumbing/air-conditioning trade press — on
-     * relevance alone it is the best source on this list. Its robots.txt
-     * disallows `/feed/`, `/*feed/*` and `/*rss/*`. It stays in the registry
-     * precisely because it is the one entry that proves, on every single pass
-     * against the live web rather than against a fixture, that the hard gate is
-     * a gate: it is refused before the feed is requested, and the refusal is
-     * recorded as `blocked_by_policy` rather than as a network error.
-     *
-     * Delete this row if the noise is not worth the proof; the DELETE is in the
-     * report. Do NOT "fix" it by fetching anyway.
-     */
-    collector: createRssCollector('https://www.hpacmag.com/feed/', 'rss:hpac-magazine'),
-    tier: 'trade',
-    region: 'ca',
-    question: 'What is the plumbing/HVAC trade itself saying? (robots.txt canary — expected to be refused)',
-  },
-  {
-    collector: createHnCollector('home services marketplace', 'hn:home-services-marketplace'),
-    tier: 'aggregator',
-    region: 'global',
-    question: 'Is anyone building, funding or writing post-mortems on this exact model?',
-  },
-  {
-    collector: createHnCollector('gig economy', 'hn:gig-economy'),
-    tier: 'aggregator',
-    region: 'global',
-    question: 'Is the ground shifting under two-sided labour marketplaces?',
-  },
-  {
-    collector: createGdeltCollector('"home services" Toronto', 'gdelt:home-services-toronto'),
-    tier: 'aggregator',
-    region: 'ca',
-    question: 'Worldwide coverage breadth on the GTA home-services market.',
-  },
-];
 
 /**
  * Tier and region for the credentialed collectors, keyed by `Collector.kind`.
@@ -136,10 +73,15 @@ const FALLBACK_META = { tier: 'aggregator' as const, region: 'global' as const, 
  * source must be reported as skipped, and a list that quietly omitted it would
  * make a missing credential indistinguishable from a source nobody added.
  */
-export function watchlist(env: Record<string, string | undefined>): WatchEntry[] {
+export function watchlist(
+  env: Record<string, string | undefined>,
+  pack: DomainPack = marketingCanada,
+): WatchEntry[] {
   const credentialed = credentialedCollectors(env).map((collector) => {
     const meta = CREDENTIALED_META[collector.kind] ?? FALLBACK_META;
     return { collector, tier: meta.tier, region: meta.region, question: meta.question };
   });
-  return [...KEYLESS, ...credentialed];
+  // The pack's keyless sources, then the credentialed ones — which are OURS
+  // (Search Console is our own traffic) and belong to every domain, not to one.
+  return [...pack.sources, ...credentialed];
 }

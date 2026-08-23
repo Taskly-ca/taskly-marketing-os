@@ -83,6 +83,9 @@ importers:
       '@tmos/intel':
         specifier: workspace:*
         version: link:../../packages/intel
+      '@tmos/packs':
+        specifier: workspace:*
+        version: link:../../packages/packs
       '@tmos/reason':
         specifier: workspace:*
         version: link:../../packages/reason
@@ -171,6 +174,21 @@ importers:
       '@tmos/contracts':
         specifier: workspace:*
         version: link:../contracts
+
+  packages/packs:
+    dependencies:
+      '@tmos/collectors':
+        specifier: workspace:*
+        version: link:../collectors
+      '@tmos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@tmos/guardrails':
+        specifier: workspace:*
+        version: link:../guardrails
+      '@tmos/reason':
+        specifier: workspace:*
+        version: link:../reason
 
   packages/reason:
     dependencies:

@@ -1,5 +1,14 @@
+import { UNSTATED, type Measure } from '@tmos/packs';
+
 /**
- * THE INSTRUMENT — and the rule that an instrument which drifts is not one.
+ * THE RULES AN INSTRUMENT IS HELD TO.
+ *
+ * The question sets themselves moved to `@tmos/packs` — they are what a domain
+ * declares. What stays here is what the CORE enforces about any answer, in any
+ * domain: that a bounded answer is on its menu, that a quoted one appears in
+ * the span cited for it, and that an open one may be recorded and never
+ * published. A pack that could relax any of those would make "zero core
+ * changes" true by making the core meaningless.
  *
  * `watch.ts` already fixed the question set, because a change detector whose
  * measures drift cannot detect change. The first run against a real ledger
@@ -46,103 +55,13 @@
  */
 
 /**
- * How a measure's answer relates to the document it was read from.
- *
- * `measured` is the fourth and the only one with no model in it: the value is
- * computed from a machine-readable document — counting `<loc>` entries in a
- * sitemap — so there is no span to choose and no judgement to drift. It is the
- * answer to the problem `open` records, and it still does not publish yet, for
- * a reason that is L0 rather than trust: the claim template renders the value
- * ("…is now 61") and L0 requires every number in a claim to appear verbatim in
- * a cited span, which a count derived from a document never does. The honest
- * change-Finding for a sitemap names the added services instead — values that
- * ARE in the span — and needs a purpose-built claim.
- */
-export type AnswerKind = 'bounded' | 'quoted' | 'open' | 'measured';
-
-export interface Measure {
-  readonly predicate: string;
-  readonly datatype: 'num' | 'text';
-  readonly unit: string | null;
-  /** Asked verbatim. Must have one answer the page either states or does not. */
-  readonly question: string;
-  readonly answer: AnswerKind;
-  /** `bounded` only: the complete answer set, lower-case. */
-  readonly allowed?: readonly string[];
-}
-
-/**
- * The one word a `quoted` measure may answer without quoting anything.
- *
- * "The page shows no price" is a real answer and there is no span for the
- * absence of a thing. Without a sentinel the model would have to invent one, so
- * it is named, it is the only exemption, and the transition between `unstated`
- * and a real price is precisely the change worth publishing.
- */
-export const UNSTATED = 'unstated';
-
-const YES_NO = ['yes', 'no', UNSTATED] as const;
-
-export const COMMON: readonly Measure[] = [
-  {
-    predicate: 'service_categories_count',
-    datatype: 'num',
-    unit: 'count',
-    question: 'How many distinct service categories does this page list? Count them.',
-    // Proven to drift on an unchanged page, 2026-08-22. Recorded, never published.
-    answer: 'open',
-  },
-  {
-    predicate: 'serves_canada',
-    datatype: 'text',
-    unit: null,
-    question: 'Does the page indicate service in Canada? Answer exactly yes, no, or unstated.',
-    answer: 'bounded',
-    allowed: YES_NO,
-  },
-  {
-    predicate: 'cities_listed',
-    datatype: 'text',
-    unit: null,
-    question:
-      'Which cities does the page name, comma-separated and alphabetised? If none, answer none.',
-    // A free list: order, spelling and inclusion all drift. Same class as a count.
-    answer: 'open',
-  },
-  {
-    predicate: 'lowest_advertised_price',
-    datatype: 'text',
-    unit: null,
-    question:
-      'What is the lowest price the page advertises, with its currency and unit exactly as written? If no price is shown, answer unstated.',
-    answer: 'quoted',
-  },
-  {
-    predicate: 'offers_snow_removal',
-    datatype: 'text',
-    unit: null,
-    question: 'Does the page list snow removal? Answer exactly yes, no, or unstated.',
-    answer: 'bounded',
-    allowed: YES_NO,
-  },
-  {
-    predicate: 'offers_cleaning',
-    datatype: 'text',
-    unit: null,
-    question: 'Does the page list house or home cleaning? Answer exactly yes, no, or unstated.',
-    answer: 'bounded',
-    allowed: YES_NO,
-  },
-];
-
-/**
  * True when a change in this measure may be published as a Finding.
  *
  * The two exclusions are excluded for opposite reasons and it is worth not
  * blurring them: `open` cannot be published because it is not trustworthy, and
  * `measured` cannot be published YET because T2's claim template cannot cite it.
  */
-export const publishes = (m: Measure): boolean => m.answer === 'bounded' || m.answer === 'quoted';
+export { publishes } from '@tmos/packs';
 
 /* ── the deterministic measures ───────────────────────────────────────────── */
 

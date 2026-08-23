@@ -27,6 +27,7 @@
     "@tmos/gate": "workspace:*",
     "@tmos/guardrails": "workspace:*",
     "@tmos/intel": "workspace:*",
+    "@tmos/packs": "workspace:*",
     "@tmos/reason": "workspace:*",
     "@tmos/shared": "workspace:*",
     "@tmos/surface": "workspace:*",

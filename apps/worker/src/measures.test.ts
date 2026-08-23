@@ -9,7 +9,12 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { COMMON, UNSTATED, acceptAnswer, publishes, type Measure } from './measures.js';
+import { UNSTATED, marketingCanada, publishes, type Measure } from '@tmos/packs';
+
+import { acceptAnswer } from './measures.js';
+
+/** The pack's question set — the data these rules are applied to. */
+const COMMON = marketingCanada.targets[0]?.measures ?? [];
 
 const bounded: Measure = {
   predicate: 'serves_canada',
