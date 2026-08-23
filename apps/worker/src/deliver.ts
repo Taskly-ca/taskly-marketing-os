@@ -222,9 +222,24 @@ interface DigestReport {
   readonly outcome: DeliveryOutcome | null;
 }
 
-/** The rendered notes as one plain-text body, for a transport without blocks. */
-export const plainText = (rendered: readonly RenderedFinding[]): string =>
-  rendered.map((r) => `${r.text}\n${r.deepLink}`).join('\n\n---\n\n');
+/**
+ * The rendered notes as one plain-text body, for a transport without blocks.
+ *
+ * `fallback` is the built message's own `text`, and it is not decoration: on a
+ * QUIET week nothing is rendered, so the notes are empty — and Resend rejects a
+ * mail with no `text` field outright (422). The quiet message is the one that
+ * most needs to arrive, because a system that goes quiet and a system that is
+ * broken look identical from outside, so an empty body is exactly the wrong
+ * thing to send and exactly the wrong thing to fail on. Found on the first
+ * real send, 2026-08-23.
+ */
+export const plainText = (
+  rendered: readonly RenderedFinding[],
+  fallback = '',
+): string => {
+  const body = rendered.map((r) => `${r.text}\n${r.deepLink}`).join('\n\n---\n\n');
+  return body === '' ? fallback : body;
+};
 
 export async function runDigest(deps: DigestDeps): Promise<DigestReport> {
   const gates = { honesty: assertHonest, causal: assertCausalLanguage };
@@ -263,7 +278,10 @@ export async function runDigest(deps: DigestDeps): Promise<DigestReport> {
     return { selection, rendered: [...batch.rendered], refusals, delivered: [], outcome: null };
   }
 
-  const outcome = await deps.transport.send(toPayload(message), plainText(batch.rendered));
+  const outcome = await deps.transport.send(
+    toPayload(message),
+    plainText(batch.rendered, message.text),
+  );
 
   const delivered: string[] = [];
   if (outcome.ok && selection.kind === 'digest') {

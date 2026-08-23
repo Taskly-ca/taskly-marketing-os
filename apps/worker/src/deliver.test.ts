@@ -231,6 +231,25 @@ describe('runDigest', () => {
     expect(report.outcome?.ok).toBe(true);
   });
 
+  it('gives a QUIET week a non-empty body — Resend rejects a mail without one', async () => {
+    // The first real send failed here with a 422: nothing is rendered on a
+    // quiet week, so the notes were empty, and the message that most needs to
+    // arrive was the one that could not be sent.
+    const bodies: string[] = [];
+    const transport: DigestDeliveryPort = {
+      channel: 'test',
+      async send(_message, plain) {
+        bodies.push(plain);
+        return { ok: true, channel: 'test', detail: 'posted' };
+      },
+    };
+
+    await runDigest(deps({ findings: [], transport }).input);
+
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]?.trim().length ?? 0).toBeGreaterThan(0);
+  });
+
   it('does not record a finding the render gates refused', async () => {
     const d = deps({
       findings: [finding({ claim: 'The rate change caused a drop in offers.' })],
@@ -243,6 +262,12 @@ describe('runDigest', () => {
 });
 
 describe('plainText', () => {
+  it('falls back when there is nothing rendered', () => {
+    expect(plainText([], 'no findings this week; 240 signals examined')).toBe(
+      'no findings this week; 240 signals examined',
+    );
+  });
+
   it('carries the note and its link, for a transport with no blocks', () => {
     const body = plainText([
       { id: 'a', lines: ['one', 'two'], text: 'one\ntwo', deepLink: 'https://x/a' },
