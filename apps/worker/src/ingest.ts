@@ -101,6 +101,15 @@ export interface SourceOutcomeReport {
   readonly ms: number;
 }
 
+/**
+ * Source kinds produced by a pass other than this one.
+ *
+ * Kept as data rather than inferred from the watchlist: if a whole KIND
+ * disappeared from the watchlist, that is real drift and must still be
+ * reported, which an "ignore any kind not in the watchlist" rule would hide.
+ */
+const NOT_COLLECTED_HERE: ReadonlySet<string> = new Set(['watch']);
+
 export interface IngestReport {
   readonly runId: string;
   readonly startedAt: string;
@@ -419,6 +428,12 @@ export async function ingest(options: IngestOptions, deps: IngestDeps): Promise<
     const claimed = new Set(all.map((e) => `${e.collector.kind}\u0000${e.collector.name}`));
     for (const row of await registered({})) {
       if (claimed.has(`${row.kind}\u0000${row.name}`)) continue;
+      // A source another pass owns is not drift. `watch` rows are written by
+      // the competitor watcher, which reads documents this pass has no
+      // collector for — reporting them as orphaned says "nothing collects this
+      // any more" about something collected an hour ago, and a report that
+      // cries wolf on every run is one nobody reads to the bottom of.
+      if (NOT_COLLECTED_HERE.has(row.kind)) continue;
       sources.push({
         source: row.name,
         kind: row.kind,

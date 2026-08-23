@@ -14,6 +14,7 @@
  * boot rather than a claim on a page.
  */
 import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 import { MODELS, callGroq, createBudgetState, loadEnv, type BudgetLimits } from '@tmos/shared';
 import { assertHonest } from '@tmos/guardrails';
@@ -305,7 +306,7 @@ async function writeDraft(
   return { claim: parsed.claim, so_what: parsed.so_what, subject: parsed.subject, span: parsed.span };
 }
 
-async function main(): Promise<void> {
+export async function cascade(): Promise<void> {
   assertPromptIsClean();
   console.log('honesty gate: live, and the system prompt passes it\n');
 
@@ -530,11 +531,21 @@ async function main(): Promise<void> {
               `${Number(spend[0]?.cents ?? 0).toFixed(4)}¢ — reconstructed from the ledger, ` +
               `so the daily ceiling now survives a restart`);
 
-  await closePool();
 }
 
-main().catch(async (err) => {
-  console.error('cascade failed:', err);
-  await closePool();
-  process.exit(1);
-});
+/**
+ * Run only when this file IS the process.
+ *
+ * `run.ts` imports these to drive a whole pass on ONE pool, so a module that
+ * acted on import would run a stage twice and a module that closed the pool
+ * would take the next stage down with it. Ownership of the pool therefore
+ * belongs to whoever started the process — here, this block; there, the runner.
+ */
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  cascade()
+    .catch((err: unknown) => {
+      console.error('cascade failed:', err);
+      process.exitCode = 1;
+    })
+    .finally(closePool);
+}

@@ -83,7 +83,7 @@ async function signalsExamined(): Promise<number> {
   return rows[0]?.n ?? 0;
 }
 
-function report(r: DigestReport): void {
+export function reportDigest(r: DigestReport): void {
   write('');
   if (r.selection.kind === 'quiet') {
     write(`QUIET — ${r.selection.reason}, ${r.selection.checked} signals examined`);
@@ -137,7 +137,7 @@ export async function digest(): Promise<DigestReport> {
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   digest()
-    .then(report)
+    .then(reportDigest)
     .catch((error: unknown) => {
       process.stderr.write(`digest failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
       process.exitCode = 1;

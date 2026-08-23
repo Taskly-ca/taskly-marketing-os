@@ -308,6 +308,33 @@ describe('ingest', () => {
     expect(h.outcomes.map((o) => o.id)).not.toContain(abandoned.id);
   });
 
+  it('does not cry orphan over a source another pass owns', async () => {
+    // `watch` rows are written by the competitor watcher, which reads documents
+    // this pass has no collector for. Calling one orphaned says "nothing
+    // collects this any more" about something collected an hour ago, and a
+    // report that cries wolf every run is one nobody reads to the bottom of.
+    const watched = stubState({ kind: 'watch', name: 'competitor-pages' });
+    const h = harness([entry(stubCollector('rss', 'rss:current', [ok([])]))], {
+      registered: async () => [watched],
+    });
+    const report = await ingest({}, h.deps);
+
+    expect(report.sources.some((s) => s.status === 'orphan')).toBe(false);
+  });
+
+  it('still reports a collector kind that vanished entirely', async () => {
+    // The rule is by KIND-OF-PRODUCER, not "any kind absent from the
+    // watchlist" — the latter would hide the real drift of a whole collector
+    // kind being deleted, which is exactly what this check is for.
+    const gone = stubState({ kind: 'gdelt', name: 'gdelt:retired' });
+    const h = harness([entry(stubCollector('rss', 'rss:current', [ok([])]))], {
+      registered: async () => [gone],
+    });
+    const report = await ingest({}, h.deps);
+
+    expect(report.sources.find((s) => s.status === 'orphan')?.source).toBe('gdelt:retired');
+  });
+
   it('does not cry orphan on a filtered pass, where every other kind would look abandoned', async () => {
     const other = stubState({ kind: 'hn', name: 'hn:elsewhere' });
     const h = harness([entry(stubCollector('rss', 'rss:current', [ok([])]))], {

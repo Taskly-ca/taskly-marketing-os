@@ -15,6 +15,7 @@
  */
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { db, sql, closePool } from '@tmos/db';
 
@@ -278,7 +279,7 @@ function page(d: {
 </div>`;
 }
 
-async function main(): Promise<void> {
+export async function writeBriefing(): Promise<void> {
   const facts = await db().query<FactRow>(sql`
     select e.name as company, f.predicate,
            coalesce(f.object_text, f.object_num::text) as value,
@@ -345,11 +346,21 @@ async function main(): Promise<void> {
     `  ${facts.length} facts · ${preds.length} forecasts · ${sources.length} sources · ` +
       `${findingRows.length} findings (${withdrawn} withdrawn)`,
   );
-  await closePool();
 }
 
-main().catch(async (err) => {
-  console.error('report failed:', err);
-  await closePool();
-  process.exit(1);
-});
+/**
+ * Run only when this file IS the process.
+ *
+ * `run.ts` imports these to drive a whole pass on ONE pool, so a module that
+ * acted on import would run a stage twice and a module that closed the pool
+ * would take the next stage down with it. Ownership of the pool therefore
+ * belongs to whoever started the process — here, this block; there, the runner.
+ */
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  writeBriefing()
+    .catch((err: unknown) => {
+      console.error('report failed:', err);
+      process.exitCode = 1;
+    })
+    .finally(closePool);
+}

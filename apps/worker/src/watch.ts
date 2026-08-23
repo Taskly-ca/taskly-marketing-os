@@ -22,6 +22,7 @@
  * Every page here was checked against its own robots.txt before being added.
  */
 import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 import { MODELS, callGroq, createBudgetState, loadEnv, type BudgetLimits } from '@tmos/shared';
 import {
@@ -383,7 +384,7 @@ async function extractFromPage(
   return { readings, discarded, refusals, spentCents: res.usage.costCents };
 }
 
-async function main(): Promise<void> {
+export async function watchCompetitors(): Promise<void> {
   const env = loadEnv();
   const limits: BudgetLimits = {
     maxRunTokens: env.TMOS_MAX_RUN_TOKENS,
@@ -648,11 +649,21 @@ async function main(): Promise<void> {
     select (select count(*) from fact)::int as facts, (select count(*) from entity)::int as entities`);
   console.log(`world model now holds ${counts[0]?.facts ?? 0} facts about ${counts[0]?.entities ?? 0} entities`);
 
-  await closePool();
 }
 
-main().catch(async (err) => {
-  console.error('watch failed:', err);
-  await closePool();
-  process.exit(1);
-});
+/**
+ * Run only when this file IS the process.
+ *
+ * `run.ts` imports these to drive a whole pass on ONE pool, so a module that
+ * acted on import would run a stage twice and a module that closed the pool
+ * would take the next stage down with it. Ownership of the pool therefore
+ * belongs to whoever started the process — here, this block; there, the runner.
+ */
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  watchCompetitors()
+    .catch((err: unknown) => {
+      console.error('watch failed:', err);
+      process.exitCode = 1;
+    })
+    .finally(closePool);
+}

@@ -21,13 +21,13 @@
     },
     "apps/worker": {
       "entry": [
-        "src/cli.ts",
         "src/seed/run.ts",
         "src/cascade.ts",
         "src/watch.ts",
         "src/report.ts",
         "src/migrate.ts",
-        "src/digest.ts"
+        "src/digest.ts",
+        "src/run.ts"
       ]
     }
   }

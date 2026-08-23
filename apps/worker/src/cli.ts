@@ -90,6 +90,26 @@ function report(r: IngestReport): void {
   write('');
 }
 
+/**
+ * One collection pass, printed. Exported so `run.ts` can drive it as a stage on
+ * the same pool — the pool is closed by whoever started the process, not here.
+ */
+export async function ingestOnce(options: IngestOptions = {}): Promise<IngestReport> {
+  const system = await buildSystem();
+  const result = await ingest(options, {
+    now: () => new Date(),
+    transport: system.transport,
+    env: system.processEnv,
+  });
+  report(result);
+  // The ceilings this pass ran under. T0 spends nothing — that is the design,
+  // and printing it is how a change to that becomes visible immediately.
+  write(
+    `budget  killswitch=${system.budget.killswitch}  spent_today=${system.budget.dailyCostCents}c / ${system.limits.maxDailyCostCents}c  (T0 spends nothing)`,
+  );
+  return result;
+}
+
 async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
