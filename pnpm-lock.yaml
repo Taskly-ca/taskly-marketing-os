@@ -86,6 +86,9 @@ importers:
       '@tmos/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@tmos/surface':
+        specifier: workspace:*
+        version: link:../../packages/surface
       '@tmos/world':
         specifier: workspace:*
         version: link:../../packages/world
