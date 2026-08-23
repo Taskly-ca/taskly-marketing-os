@@ -62,6 +62,9 @@ importers:
       '@tmos/adapters':
         specifier: workspace:*
         version: link:../../packages/adapters
+      '@tmos/brain':
+        specifier: workspace:*
+        version: link:../../packages/brain
       '@tmos/collectors':
         specifier: workspace:*
         version: link:../../packages/collectors

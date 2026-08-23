@@ -14,10 +14,12 @@
     "cascade": "node --env-file-if-exists=../../.env dist/cascade.js",
     "digest": "node --env-file-if-exists=../../.env dist/digest.js",
     "watch": "node --env-file-if-exists=../../.env dist/watch.js",
-    "report": "node --env-file-if-exists=../../.env dist/report.js"
+    "report": "node --env-file-if-exists=../../.env dist/report.js",
+    "brain:sync": "node --env-file-if-exists=../../.env dist/brain-sync.js"
   },
   "dependencies": {
     "@tmos/adapters": "workspace:*",
+    "@tmos/brain": "workspace:*",
     "@tmos/collectors": "workspace:*",
     "@tmos/contracts": "workspace:*",
     "@tmos/db": "workspace:*",

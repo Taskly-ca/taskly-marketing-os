@@ -69,6 +69,9 @@ describe('the declared pass', () => {
   it('collects before it reasons, and writes the page last', () => {
     const names = STAGES.map((s) => s.name);
     expect(names.indexOf('collect')).toBeLessThan(names.indexOf('reason'));
+    // The corpus is what a Finding is checked against; a stale mirror makes the
+    // reasoning stage quote last month's policy.
+    expect(names.indexOf('brain')).toBeLessThan(names.indexOf('reason'));
     expect(names.indexOf('watch')).toBeLessThan(names.indexOf('digest'));
     // The briefing reflects the pass that just ran, even when stages failed.
     expect(names.at(-1)).toBe('briefing');

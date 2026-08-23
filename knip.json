@@ -27,7 +27,8 @@
         "src/report.ts",
         "src/migrate.ts",
         "src/digest.ts",
-        "src/run.ts"
+        "src/run.ts",
+        "src/brain-sync.ts"
       ]
     }
   }

@@ -43,6 +43,7 @@ import { ingestOnce } from './cli.js';
 import { watchCompetitors } from './watch.js';
 import { cascade } from './cascade.js';
 import { digest, reportDigest } from './digest.js';
+import { brainSync } from './brain-sync.js';
 import { writeBriefing } from './report.js';
 
 const write = (line: string): void => {
@@ -66,6 +67,21 @@ export const STAGES: readonly Stage[] = [
     name: 'collect',
     why: 'free sources into `signal`, backed off per source',
     run: () => ingestOnce({}),
+    spends: false,
+  },
+  {
+    name: 'brain',
+    why: 'mirror taskly-brain/ so an answer can cite our own documents',
+    /**
+     * Before reasoning, and tolerant of an absent snapshot.
+     *
+     * The corpus is what a Finding is checked AGAINST, so a stale mirror makes
+     * the reasoning stage quote last month's policy. And the stage is allowed
+     * to fail without stopping the pass, because the marketplace repo may
+     * simply not have exported one — a machine that has TMOS but not taskly.ca
+     * is a legitimate deployment.
+     */
+    run: brainSync,
     spends: false,
   },
   {
