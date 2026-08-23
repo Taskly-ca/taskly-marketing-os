@@ -59,7 +59,10 @@ function decodeEntities(s: string): string {
 }
 
 /**
- * The service slugs under `prefix`, deduplicated and sorted.
+ * The service slugs under `prefix`, deduplicated and sorted, each mapped to the
+ * URL it was read from — VERBATIM, so a citation quotes the document rather
+ * than a string we rebuilt from a slug and a prefix. Reconstructing the line
+ * would look identical and would not be evidence.
  *
  * SORTED IS NOT COSMETIC. The value is compared against the last run to decide
  * whether anything changed, so a sitemap that reorders itself — and generated
@@ -69,8 +72,11 @@ function decodeEntities(s: string): string {
  *
  * A trailing slash and a query string are stripped for the same reason.
  */
-export function serviceSlugs(locs: readonly string[], prefix: string): string[] {
-  const out = new Set<string>();
+function serviceUrls(
+  locs: readonly string[],
+  prefix: string,
+): Map<string, string> {
+  const out = new Map<string, string>();
   for (const loc of locs) {
     const at = loc.indexOf(prefix);
     if (at === -1) continue;
@@ -82,13 +88,24 @@ export function serviceSlugs(locs: readonly string[], prefix: string): string[] 
     // Nothing after the prefix is the index page, not a service; a further
     // slash is a child page of one we have already counted.
     if (slug === '' || slug.includes('/')) continue;
-    out.add(slug.toLowerCase());
+    const key = slug.toLowerCase();
+    if (!out.has(key)) out.set(key, loc);
   }
-  return [...out].sort();
+  return new Map([...out].sort(([a], [b]) => (a < b ? -1 : 1)));
+}
+
+export function serviceSlugs(locs: readonly string[], prefix: string): string[] {
+  return [...serviceUrls(locs, prefix).keys()];
 }
 
 export interface SitemapReading {
+  /** The document this reading came from — the URL a citation points at. */
+  readonly sourceUrl: string;
+  /** When it was read. Carried so a citation is not stamped by its consumer. */
+  readonly observedAt: string;
   readonly slugs: readonly string[];
+  /** slug → the URL as the document wrote it. The citation for that slug. */
+  readonly urls: ReadonlyMap<string, string>;
   /** Deterministic: the same document always yields the same number. */
   readonly count: number;
   /** The comparable value — sorted, comma-joined, insensitive to ordering. */
@@ -105,15 +122,39 @@ export interface SitemapReading {
  *  the source; a citation a human will not read is not a citation. */
 const SPAN_LINES = 12;
 
-export function readSitemap(xml: string, prefix: string): SitemapReading {
-  const slugs = serviceSlugs(extractLocs(xml), prefix);
+export function readSitemap(
+  xml: string,
+  prefix: string,
+  at: { sourceUrl: string; observedAt: string },
+): SitemapReading {
+  const urls = serviceUrls(extractLocs(xml), prefix);
+  const slugs = [...urls.keys()];
   return {
+    sourceUrl: at.sourceUrl,
+    observedAt: at.observedAt,
     slugs,
+    urls,
     count: slugs.length,
     catalogue: slugs.join(','),
-    span: slugs
-      .slice(0, SPAN_LINES)
-      .map((s) => `<loc>${prefix}${s}</loc>`)
-      .join(' '),
+    span: quoteSlugs(urls, slugs.slice(0, SPAN_LINES)),
   };
+}
+
+/**
+ * The evidence for a specific set of slugs.
+ *
+ * A change-Finding names the services that appeared, so the span it cites must
+ * contain THOSE URLs — not the first twelve in the document, which is what a
+ * general-purpose span would give it and which would leave the named services
+ * uncited. A slug with no URL is dropped rather than invented.
+ */
+export function quoteSlugs(
+  urls: ReadonlyMap<string, string>,
+  slugs: readonly string[],
+): string {
+  return slugs
+    .map((s) => urls.get(s))
+    .filter((u): u is string => u !== undefined)
+    .map((u) => `<loc>${u}</loc>`)
+    .join(' ');
 }

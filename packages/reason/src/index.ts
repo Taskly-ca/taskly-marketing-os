@@ -21,6 +21,10 @@
  * it stops promoting and says so, rather than quietly producing worse answers.
  */
 export * from './finding/store.js';
+/** The mint itself. A caller that writes its own claim — `apps/worker`'s
+ *  catalogue Finding, whose sentence T2's template cannot express — still has
+ *  to go through the same five gates, so the door has to be reachable. */
+export * from './finding/mint.js';
 
 export * from './tier/t1-skim.js';
 export * from './tier/t2-correlate.js';

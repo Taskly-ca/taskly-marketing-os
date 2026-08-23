@@ -12,6 +12,10 @@ import { describe, expect, it } from 'vitest';
 import { extractLocs, readSitemap, serviceSlugs } from './sitemap.js';
 
 const PREFIX = 'https://jiffyondemand.com/service/';
+const AT = {
+  sourceUrl: 'https://jiffyondemand.com/sitemap.xml',
+  observedAt: '2026-08-23T00:00:00.000Z',
+};
 
 const xml = (paths: readonly string[]): string =>
   `<?xml version="1.0" encoding="UTF-8"?>
@@ -54,7 +58,7 @@ describe('serviceSlugs', () => {
   });
 
   it('is insensitive to the order the sitemap lists them in', () => {
-    const a = readSitemap(SITEMAP, PREFIX);
+    const a = readSitemap(SITEMAP, PREFIX, AT);
     const b = readSitemap(
       xml([
         'https://jiffyondemand.com/service/tv-mounting',
@@ -62,6 +66,7 @@ describe('serviceSlugs', () => {
         'https://jiffyondemand.com/service/junk-removal',
       ]),
       PREFIX,
+      AT,
     );
     // A generated sitemap reshuffles on every deploy. If that read as a change,
     // the catalogue would be a drift detector rather than a change detector.
@@ -80,10 +85,10 @@ describe('serviceSlugs', () => {
 });
 
 describe('readSitemap', () => {
-  const reading = readSitemap(SITEMAP, PREFIX);
+  const reading = readSitemap(SITEMAP, PREFIX, AT);
 
   it('gives the same answer for the same document', () => {
-    expect(readSitemap(SITEMAP, PREFIX)).toEqual(reading);
+    expect(readSitemap(SITEMAP, PREFIX, AT)).toEqual(reading);
   });
 
   it('counts what it lists, and nothing else', () => {

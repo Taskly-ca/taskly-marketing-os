@@ -196,3 +196,84 @@ describe('findingFromChange', () => {
     expect(got.kind).toBe('baseline');
   });
 });
+
+/**
+ * The written-claim path.
+ *
+ * It exists because T2's template renders the observed VALUE, and a value
+ * derived from a document — a count, a catalogue — appears in no span, so that
+ * sentence is unciteable by construction. What must not come with the exemption
+ * is a weaker gate: a written claim faces the same five, and one with no
+ * evidence for the values it names is refused rather than shipped.
+ */
+describe('findingFromChange — a claim the caller writes', () => {
+  const prior = { value: { kind: 'text', text: 'a,b' } as ObservedValue, observedAt: '2026-08-01T00:00:00.000Z' };
+
+  const catalogue = (writeClaim: ObservedChange['writeClaim']): ObservedChange =>
+    change({
+      predicate: 'sitemap_service_catalogue',
+      predicateLabel: 'sitemap service catalogue',
+      value: { kind: 'text', text: 'a,b,c' },
+      writeClaim,
+    });
+
+  it('mints the sentence the caller wrote, not the template’s', async () => {
+    const got = await findingFromChange(
+      catalogue(() => ({
+        claim: "Jiffy's sitemap now lists junk-removal.",
+        so_what: 'A category has appeared in it — check whether our taxonomy covers it.',
+        evidence: evidence('<loc>https://jiffyondemand.com/service/junk-removal</loc>'),
+      })),
+      deps({ entityKnown: true, current: prior }),
+    );
+
+    expect(got.kind).toBe('minted');
+    if (got.kind !== 'minted') return;
+    expect(got.finding.claim).toBe("Jiffy's sitemap now lists junk-removal.");
+    // The template would have said "is now a,b,c", which is the sentence this
+    // path exists to avoid.
+    expect(got.finding.claim).not.toContain('a,b,c');
+    expect(got.finding.basis).toBe('inferred_from_sources');
+    expect(got.finding.causal_rung).toBe(0);
+  });
+
+  it('says nothing when the values differ but the thing does not', async () => {
+    // A reordered document: new string, identical set.
+    const got = await findingFromChange(catalogue(() => null), deps({ entityKnown: true, current: prior }));
+    expect(got.kind).toBe('restated');
+  });
+
+  it('refuses a written claim with no evidence for what it names', async () => {
+    const got = await findingFromChange(
+      catalogue(() => ({ claim: 'Something changed.', so_what: 'Look into it.', evidence: [] })),
+      deps({ entityKnown: true, current: prior }),
+    );
+
+    expect(got.kind).toBe('rejected');
+    if (got.kind !== 'rejected') return;
+    expect(got.detail).toMatch(/no evidence/);
+  });
+
+  it('still faces L0 — a figure the span lacks is refused', async () => {
+    const got = await findingFromChange(
+      catalogue(() => ({
+        claim: "Jiffy's sitemap now lists 47 services.",
+        so_what: 'Check whether our taxonomy covers them.',
+        evidence: evidence('<loc>https://jiffyondemand.com/service/junk-removal</loc>'),
+      })),
+      deps({ entityKnown: true, current: prior }),
+    );
+
+    expect(got.kind).toBe('rejected');
+    if (got.kind !== 'rejected') return;
+    expect(got.detail).toMatch(/47/);
+  });
+
+  it('never writes a claim from a baseline, however good the writer', async () => {
+    const writer = vi.fn(() => ({ claim: 'x', so_what: 'y', evidence: evidence('z') }));
+    const got = await findingFromChange(catalogue(writer), deps({ entityKnown: true, current: null }));
+
+    expect(got.kind).toBe('baseline');
+    expect(writer).not.toHaveBeenCalled();
+  });
+});

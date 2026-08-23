@@ -38,7 +38,11 @@ import { recordChange, type FactInput } from '@tmos/world';
 import { db, sql, closePool } from '@tmos/db';
 
 import { createTransport } from './transport.js';
-import { findingFromChange, type ChangeOutcome } from './change-finding.js';
+import {
+  findingFromChange,
+  type ChangeOutcome,
+  type ClaimWriter,
+} from './change-finding.js';
 import {
   COMMON,
   SITEMAP_CATALOGUE,
@@ -47,7 +51,8 @@ import {
   publishes,
   type Measure,
 } from './measures.js';
-import { readSitemap, type SitemapReading } from './sitemap.js';
+import { quoteSlugs, readSitemap, type SitemapReading } from './sitemap.js';
+import { catalogueClaim } from './catalogue-finding.js';
 import { loadFactSheet } from './fact-sheet.js';
 import { createGroqVerifier, verifyForPublication } from './verifier.js';
 
@@ -88,6 +93,12 @@ interface Reading {
   readonly measure: Measure;
   readonly value: string;
   readonly span: string;
+  /**
+   * Present when this measure's change needs DESCRIBING rather than rendering.
+   * The catalogue is the case: "…is now 51" cannot be cited by any span, and
+   * "now lists junk-removal" can be cited by the line junk-removal came from.
+   */
+  readonly writeClaim?: ClaimWriter;
 }
 
 const TARGETS: readonly WatchTarget[] = [
@@ -211,15 +222,53 @@ async function ensureSource(): Promise<string> {
 
 /* ── the two halves of a pass ─────────────────────────────────────────────── */
 
+/**
+ * The catalogue's claim writer, bound to the reading it will cite from.
+ *
+ * The span is built from THIS run's `<loc>` lines for exactly the slugs the
+ * claim names. A removed service has no line in this run — it is gone from the
+ * document, which is the point — so it cannot be cited from here and
+ * `quoteSlugs` drops it. That is the honest limit of a one-document citation:
+ * we can prove what a sitemap says, never what it stopped saying, and closing
+ * that needs the prior fact's own evidence ref. Flagged rather than papered
+ * over — the claim still names the removal, and L0 will refuse it if the
+ * removal's slug carries a figure the span lacks.
+ */
+function catalogueWriter(company: string, reading: SitemapReading): ClaimWriter {
+  return (prior, next) => {
+    if (prior.kind !== 'text' || next.kind !== 'text') return null;
+    const written = catalogueClaim(company, prior.text, next.text);
+    if (written === null) return null;
+
+    const span = quoteSlugs(reading.urls, written.cited);
+    if (span === '') return null;
+
+    return {
+      claim: written.claim,
+      so_what: written.so_what,
+      evidence: [
+        {
+          signal_id: null,
+          fact_id: null,
+          source_url: reading.sourceUrl,
+          span: span.slice(0, 1_000),
+          observed_at: reading.observedAt,
+        },
+      ],
+    };
+  };
+}
+
 /** The sitemap, or null when it cannot be read. Never throws a run down. */
 async function readSitemapFor(
   transport: ReturnType<typeof createTransport>,
   sitemap: { url: string; prefix: string },
+  observedAt: string,
 ): Promise<SitemapReading | null> {
   try {
     const res = await transport.fetchText(sitemap.url, { Accept: 'application/xml,text/xml' });
     if (res.status < 200 || res.status >= 300) return null;
-    const reading = readSitemap(res.body, sitemap.prefix);
+    const reading = readSitemap(res.body, sitemap.prefix, { sourceUrl: sitemap.url, observedAt });
     // Zero services is a parse that found nothing, not a company that sells
     // nothing, and recording it would open a fact whose next reading looks like
     // a company inventing an entire catalogue overnight.
@@ -397,13 +446,20 @@ async function main(): Promise<void> {
     const readings: Reading[] = [];
 
     if (t.sitemap) {
-      const reading = await readSitemapFor(transport, t.sitemap);
+      const reading = await readSitemapFor(transport, t.sitemap, now);
       if (reading === null) {
         console.log('  sitemap unreadable — nothing recorded from it');
       } else {
         readings.push(
+          // The count is recorded and never published: no span contains it, and
+          // no rewording of the claim can change that.
           { measure: SITEMAP_COUNT, value: String(reading.count), span: reading.span },
-          { measure: SITEMAP_CATALOGUE, value: reading.catalogue, span: reading.span },
+          {
+            measure: SITEMAP_CATALOGUE,
+            value: reading.catalogue,
+            span: reading.span,
+            writeClaim: catalogueWriter(t.company, reading),
+          },
         );
         console.log(`  sitemap: ${reading.count} services listed (no model involved)`);
       }
@@ -455,7 +511,11 @@ async function main(): Promise<void> {
        * prior and classify every item as `restated` — a change detector that
        * can never detect a change, and which looks perfectly healthy doing it.
        */
-      const judged: ChangeOutcome | null = !publishes(o)
+      // A `measured` measure publishes only when it brought a sentence with it.
+      // That is the whole exemption: not "we trust it more", but "there is a
+      // claim about it that a span can carry".
+      const publishable = publishes(o) || a.writeClaim !== undefined;
+      const judged: ChangeOutcome | null = !publishable
         ? null
         : await findingFromChange(
         {
@@ -481,6 +541,7 @@ async function main(): Promise<void> {
           ],
           rootSourceId: sourceId,
           sourceTier: 'first_party',
+          writeClaim: a.writeClaim,
           // A competitor's own page changing what it advertises is the highest
           // stake this path can observe; nothing here is a legal exposure.
           stakes: 'high',

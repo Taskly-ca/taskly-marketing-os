@@ -36,9 +36,11 @@
 import { randomUUID } from 'node:crypto';
 
 import type { EvidenceRef, Finding, Region } from '@tmos/contracts';
+import { assertHonest } from '@tmos/guardrails';
 import {
   assembleFinding,
   correlate,
+  mintOrThrow,
   scoreFinding,
   type DomainScore,
   type EntityHistoryPort,
@@ -75,6 +77,31 @@ export const CAC_CEILING_CENTS = 1_600;
 
 /* ── input ────────────────────────────────────────────────────────────────── */
 
+/**
+ * A claim T2's template cannot write.
+ *
+ * The template renders the observed VALUE — "…is now 51" — which is right for a
+ * price and unciteable for anything derived from a document, because L0 wants
+ * every number in a claim to appear in a span and a count appears in none. A
+ * measure whose change is better described than rendered supplies one of these
+ * instead, and gets the same five gates.
+ *
+ * Returning null means the values differ but the THING does not: a sitemap that
+ * reordered itself produces a new string and an identical catalogue. Saying
+ * nothing is the correct output, and it is reported as `restated`.
+ */
+export interface WrittenClaim {
+  readonly claim: string;
+  readonly so_what: string;
+  /** The evidence for THIS sentence — the lines carrying what the claim names. */
+  readonly evidence: readonly EvidenceRef[];
+}
+
+export type ClaimWriter = (
+  prior: ObservedValue,
+  next: ObservedValue,
+) => WrittenClaim | null;
+
 export interface ObservedChange {
   /** `type:id` per `subjectRefSchema`; `company:<domain>` on this path. */
   readonly subjectRef: string;
@@ -95,6 +122,8 @@ export interface ObservedChange {
   readonly rootSourceId: string;
   readonly sourceTier: SourceTier;
   readonly stakes: 'low' | 'medium' | 'high';
+  /** Supplied by measures whose change needs describing rather than rendering. */
+  readonly writeClaim?: ClaimWriter;
 }
 
 export interface ChangeFindingDeps {
@@ -165,6 +194,10 @@ export async function findingFromChange(
     generatedBy: deps.generatedBy,
   };
 
+  if (change.writeClaim) {
+    return mintWritten(change, verdict, { id, createdAt, ...deps }, change.writeClaim);
+  }
+
   /**
    * ASSEMBLED TWICE, ON PURPOSE. The domain scorer reads `claim` and `so_what`
    * — the corridor term looks for Toronto in the text — and the assembler is
@@ -196,6 +229,78 @@ export async function findingFromChange(
   let finding: Finding;
   try {
     finding = assembleFinding(verdict, { ...assemble, domainScore: score.domain_score });
+  } catch (error) {
+    return { kind: 'rejected', detail: error instanceof Error ? error.message : String(error) };
+  }
+
+  return { kind: 'minted', finding, verdict, score };
+}
+
+/* ── the written-claim path ───────────────────────────────────────────────── */
+
+/**
+ * Mint a caller-written claim through the same door.
+ *
+ * `assembleFinding` is not skipped to avoid the gates — it is skipped because
+ * its claim template cannot say this sentence. Everything after the sentence is
+ * identical: `mintOrThrow` runs the same five gates `assembleFinding` runs,
+ * including the honesty denylist over both prose fields, and the evidence the
+ * writer chose is the retrieval set L0 validates against, because those spans
+ * came off a document we fetched and no model picked a URL.
+ */
+async function mintWritten(
+  change: ObservedChange,
+  verdict: T2Verdict,
+  ctx: { id: string; createdAt: string } & ChangeFindingDeps,
+  write: ClaimWriter,
+): Promise<ChangeOutcome> {
+  const prior = verdict.priorValue;
+  if (prior === null) return { kind: 'baseline', detail: 'no prior to describe a change against' };
+
+  const written = write(prior, verdict.observedValue);
+  // The values differ and the thing does not — a reordered document. Nothing
+  // to say, and `restated` is exactly what that means.
+  if (written === null) return { kind: 'restated' };
+  if (written.evidence.length === 0) {
+    return {
+      kind: 'rejected',
+      detail: 'a written claim with no evidence for the values it names is refused',
+    };
+  }
+
+  const score = scoreFinding(
+    {
+      claim: written.claim,
+      so_what: written.so_what,
+      source_tiers: [change.sourceTier],
+      channel: null,
+    },
+    { cacCeilingCents: ctx.cacCeilingCents ?? CAC_CEILING_CENTS },
+  );
+
+  let finding: Finding;
+  try {
+    finding = mintOrThrow(
+      {
+        id: ctx.id,
+        claim: written.claim,
+        so_what: written.so_what,
+        subject_refs: [change.subjectRef],
+        evidence: written.evidence,
+        basis: 'inferred_from_sources',
+        causal_rung: 0,
+        stakes: change.stakes,
+        region: ctx.region,
+        domain_score: score.domain_score,
+        generated_by: ctx.generatedBy,
+        created_at: ctx.createdAt,
+      },
+      {
+        honesty: assertHonest,
+        surface: 'internal',
+        retrievedUrls: written.evidence.map((e) => e.source_url),
+      },
+    );
   } catch (error) {
     return { kind: 'rejected', detail: error instanceof Error ? error.message : String(error) };
   }
