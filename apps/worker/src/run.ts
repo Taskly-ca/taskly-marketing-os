@@ -44,6 +44,7 @@ import { watchCompetitors } from './watch.js';
 import { cascade } from './cascade.js';
 import { digest, reportDigest } from './digest.js';
 import { brainSync } from './brain-sync.js';
+import { calibrationReport, resolveDue } from './resolve.js';
 import { writeBriefing } from './report.js';
 
 const write = (line: string): void => {
@@ -95,6 +96,21 @@ export const STAGES: readonly Stage[] = [
     why: 'T1 over what was collected, then synthesis on what survives',
     run: cascade,
     spends: true,
+  },
+  {
+    name: 'resolve',
+    why: 'settle every prediction that came due, and score the record',
+    /**
+     * After reasoning, before the digest. A prediction that resolved this
+     * morning should be scored before the week's message goes out, and the
+     * score is the one number in this system that only gets more valuable —
+     * TMOS-ARCHITECTURE §1, the first of the three things that compound.
+     */
+    run: async () => {
+      const records = await resolveDue();
+      for (const line of calibrationReport(records)) write(line);
+    },
+    spends: false,
   },
   {
     name: 'digest',

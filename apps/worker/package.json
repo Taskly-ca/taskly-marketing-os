@@ -11,6 +11,7 @@
     "run:pass": "node --env-file-if-exists=../../.env dist/run.js",
     "migrate": "node --env-file-if-exists=../../.env dist/migrate.js",
     "seed:predictions": "node --env-file-if-exists=../../.env dist/seed/run.js",
+    "resolve": "node --env-file-if-exists=../../.env dist/resolve.js",
     "cascade": "node --env-file-if-exists=../../.env dist/cascade.js",
     "digest": "node --env-file-if-exists=../../.env dist/digest.js",
     "watch": "node --env-file-if-exists=../../.env dist/watch.js",
