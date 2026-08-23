@@ -16,8 +16,19 @@ freshness and nothing else.
 
 ## macOS — launchd
 
-`~/Library/LaunchAgents/ca.taskly.tmos.plist`, then
-`launchctl load ~/Library/LaunchAgents/ca.taskly.tmos.plist`.
+The file is committed at `scripts/ca.taskly.tmos.plist`, paths already filled
+in. Two commands:
+
+```bash
+cp scripts/ca.taskly.tmos.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/ca.taskly.tmos.plist
+```
+
+Check it took: `launchctl list | grep tmos`. Run it once by hand without
+waiting for 07:30: `launchctl start ca.taskly.tmos`, then `tail -f /tmp/tmos.log`.
+To stop: `launchctl unload ~/Library/LaunchAgents/ca.taskly.tmos.plist`.
+
+For reference, that file is:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>

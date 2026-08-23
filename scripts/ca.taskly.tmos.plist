@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ca.taskly.tmos</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/nishant/Documents/taskly-marketing-os</string>
+
+  <!--
+    `zsh -lc`, not the binary directly. launchd starts with a near-empty PATH,
+    so `pnpm` and `node` are simply not found — the classic way a LaunchAgent
+    "runs" every day and produces nothing. The login shell loads the profile
+    that knows where they are.
+  -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>pnpm --filter @tmos/worker run:pass</string>
+  </array>
+
+  <!--
+    StartCalendarInterval, never StartInterval. A laptop that was asleep at
+    07:30 runs ONCE on wake; an interval timer would replay every missed tick,
+    which on a machine closed for a week is seven passes in a minute, seven
+    collection runs against the same feeds, and a rate-limit ban.
+  -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>7</integer>
+    <key>Minute</key><integer>30</integer>
+  </dict>
+
+  <!--
+    The pass exits zero even when a stage failed, on purpose — so the log is
+    the alerting surface, not the exit code. `grep FAILED /tmp/tmos.log`.
+  -->
+  <key>StandardOutPath</key><string>/tmp/tmos.log</string>
+  <key>StandardErrorPath</key><string>/tmp/tmos.err</string>
+
+  <!-- Never at load time: loading it should not fire a pass immediately. -->
+  <key>RunAtLoad</key><false/>
+</dict>
+</plist>
