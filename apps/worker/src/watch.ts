@@ -38,13 +38,13 @@ import { passesVerification } from '@tmos/reason';
 import { recordChange, type FactInput } from '@tmos/world';
 import { db, sql, closePool } from '@tmos/db';
 
-import { createTransport } from './transport.js';
 import {
   findingFromChange,
   type ChangeOutcome,
   type ClaimWriter,
 } from './change-finding.js';
 import { SITEMAP_CATALOGUE, SITEMAP_COUNT, acceptAnswer, publishes } from './measures.js';
+import { createTransport, createRenderer, type RenderOutcome } from '@tmos/collectors';
 import {
   DEFAULT_PACK_ID,
   PACKS,
@@ -54,7 +54,6 @@ import {
   type WatchTarget,
 } from '@tmos/packs';
 import { quoteSlugs, readSitemap, type SitemapReading } from './sitemap.js';
-import { createRenderer, type RenderOutcome } from './render.js';
 import { catalogueClaim } from './catalogue-finding.js';
 import { loadFactSheet } from './fact-sheet.js';
 import { createGroqVerifier, verifyForPublication } from './verifier.js';

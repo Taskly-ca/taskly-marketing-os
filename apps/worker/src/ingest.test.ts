@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { emptySeen } from './gate.js';
 import { ingest, type IngestDeps } from './ingest.js';
 import type { NewSignal } from './store.js';
-import type { Transport } from './transport.js';
+import type { Transport } from '@tmos/collectors';
 import type { WatchEntry } from './watchlist.js';
 
 const NOW = new Date('2026-08-22T12:00:00.000Z');

@@ -4,14 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TMOS Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --ground:#f5f7f8; --surface:#ffffff; --line:#dfe4e7;
-    --ink:#14181b; --muted:#69737b; --faint:#98a2a9;
-    --brass:#8d6a12; --hold:#2c6b50; --moved:#a04d1a;
+    --ground:#faf7f2; --surface:#ffffff; --line:#e8e2d8;
+    --ink:#14120f; --muted:#6b6459; --faint:#9c948699;
+    --brass:#b8860b; --hold:#2c6b50; --moved:#a04d1a;
     --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    --radius:14px;
+    --sans:"Manrope",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --radius:16px;
   }
   @media (prefers-color-scheme:dark){
     :root:not([data-theme="light"]){
@@ -26,7 +29,7 @@
        font-size:14.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
   .eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;
            text-transform:uppercase;color:var(--faint)}
-  h1,h2,h3{font-weight:600;margin:0}
+  h1,h2,h3{font-weight:600;margin:0;letter-spacing:-.012em}
   a{color:inherit}
 
   /* ── shell ───────────────────────────────────────────────────────────── */
@@ -37,7 +40,7 @@
   .brand h1{font-size:15px;letter-spacing:-.01em}
   .chips{display:flex;gap:16px;flex-wrap:wrap;margin-left:auto;align-items:center}
   .chip{display:flex;flex-direction:column;line-height:1.2}
-  .chip b{font-weight:600;font-size:15px;font-variant-numeric:tabular-nums}
+  .chip b{font-weight:500;font-size:15px;font-variant-numeric:tabular-nums}
   .chip span{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;
              text-transform:uppercase;color:var(--faint)}
 
@@ -79,7 +82,7 @@
   nav.tabs button{border:0;border-radius:0;background:none;padding:11px 14px;
                   font-size:13px;color:var(--muted);border-bottom:2px solid transparent}
   nav.tabs button:hover{background:none;color:var(--ink)}
-  nav.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--brass)}
+  nav.tabs button[aria-selected="true"]{color:var(--ink);font-weight:500;border-bottom-color:var(--brass)}
   nav.tabs .n{font-family:var(--mono);font-size:10px;color:var(--faint);margin-left:5px}
   main{flex:1;overflow:auto;padding:22px}
   .panel{display:none;max-width:1080px;margin:0 auto}
@@ -126,6 +129,21 @@
   .okmsg{color:var(--hold);font-size:12.5px;margin-top:8px}
   .p{font-family:var(--mono);font-variant-numeric:tabular-nums}
   .hidden{display:none!important}
+  pre.steps{margin:8px 0 0;font-family:var(--mono);font-size:11.5px;line-height:1.6;
+            color:var(--muted);white-space:pre-wrap;max-height:200px;overflow:auto}
+  .point{padding:13px 0;border-bottom:1px solid var(--line)}
+  .point:last-child{border-bottom:0}
+  .point p{margin:0 0 7px}
+  .cite{display:block;margin-top:6px;padding:8px 11px;background:var(--ground);
+        border-left:2px solid var(--brass);border-radius:0 8px 8px 0;
+        font-size:12px;color:var(--muted)}
+  .cite a{font-family:var(--mono);font-size:10.5px;color:var(--brass);
+          text-decoration:none;display:block;margin-top:4px}
+  .cite a:hover{text-decoration:underline}
+  .drop{padding:9px 0;border-bottom:1px dashed var(--line);color:var(--muted);font-size:13px}
+  .drop:last-child{border-bottom:0}
+  .drop b{font-weight:500;color:var(--faint);text-decoration:line-through}
+  .drop em{display:block;font-style:normal;font-size:12px;color:var(--moved);margin-top:3px}
 </style>
 </head>
 <body>
@@ -163,14 +181,39 @@
   </div>
 
   <nav class="tabs" id="tabs">
-    <button data-tab="findings" aria-selected="true">What changed <span class="n" id="n-findings"></span></button>
+    <button data-tab="research" aria-selected="true">Research</button>
+    <button data-tab="findings" aria-selected="false">What changed <span class="n" id="n-findings"></span></button>
     <button data-tab="competitors" aria-selected="false">Competitors <span class="n" id="n-facts"></span></button>
     <button data-tab="forecasts" aria-selected="false">Forecasts <span class="n" id="n-preds"></span></button>
     <button data-tab="sources" aria-selected="false">Sources <span class="n" id="n-sources"></span></button>
   </nav>
 
   <main>
-    <section class="panel on" data-panel="findings">
+    <section class="panel on" data-panel="research">
+      <p class="lead">Ask a marketing or market question. It plans searches, reads the pages
+      it is allowed to read, and answers <em>only</em> from what it retrieved — every point
+      quoted from a page you can open. Points it could not source are listed as dropped
+      rather than quietly removed.</p>
+
+      <div class="card">
+        <div class="field">
+          <label for="rq">Your question</label>
+          <textarea id="rq" placeholder="e.g. Which home-services categories are growing fastest in the GTA, and who already serves them?"></textarea>
+        </div>
+        <button class="primary" id="rgo">Research this</button>
+        <span class="hint" id="rcost" style="margin-left:12px"></span>
+        <div id="rerr"></div>
+      </div>
+
+      <div class="card hidden" id="rsteps">
+        <div class="eyebrow">Working</div>
+        <pre class="steps" id="rlog"></pre>
+      </div>
+
+      <div id="rout"></div>
+    </section>
+
+    <section class="panel" data-panel="findings">
       <p class="lead">A change on a competitor's own page, verified by a second model before
       it was allowed to appear. Withdrawn findings stay here, struck through, with the reason —
       a record that hides its own mistakes is not a record.</p>
@@ -409,6 +452,70 @@ $('#fcSave').onclick = async () => {
   $('#fcP').value = ''; $('#fcWhy').value = '';
   await loadQuestions(); await load();
 };
+
+/* ── research ──────────────────────────────────────────────────────────── */
+let rEs = null;
+
+$('#rgo').onclick = () => {
+  const q = $('#rq').value.trim();
+  if (q.length < 8) { $('#rerr').innerHTML = '<div class="err">Ask a fuller question.</div>'; return; }
+  if (rEs) rEs.close();
+  $('#rerr').innerHTML = ''; $('#rout').innerHTML = ''; $('#rlog').textContent = '';
+  $('#rsteps').classList.remove('hidden');
+  $('#rgo').disabled = true; $('#rgo').textContent = 'Researching…';
+  $('#rcost').textContent = '';
+
+  rEs = new EventSource('/api/research?q=' + encodeURIComponent(q));
+  rEs.addEventListener('step', (e) => {
+    $('#rlog').textContent += JSON.parse(e.data) + '\n';
+    $('#rlog').scrollTop = $('#rlog').scrollHeight;
+  });
+  rEs.addEventListener('error_msg', (e) => {
+    $('#rerr').innerHTML = `<div class="err">${esc(JSON.parse(e.data))}</div>`;
+  });
+  rEs.addEventListener('answer', (e) => renderAnswer(JSON.parse(e.data)));
+  const done = () => { $('#rgo').disabled = false; $('#rgo').textContent = 'Research this'; if (rEs) { rEs.close(); rEs = null; } };
+  rEs.addEventListener('answer', done);
+  rEs.addEventListener('error_msg', done);
+  rEs.onerror = done;
+};
+
+function renderAnswer(a) {
+  $('#rcost').textContent = a.costCents ? a.costCents.toFixed(3) + '¢' : '';
+  const pts = a.points.map(p => `
+    <div class="point">
+      <p>${esc(p.claim)}</p>
+      ${p.citations.map(c => `<span class="cite">“${esc(c.span)}”
+        <a href="${esc(c.url)}" target="_blank" rel="noreferrer noopener">${esc(c.url)}</a></span>`).join('')}
+    </div>`).join('');
+
+  const dropped = a.dropped.length ? `
+    <article class="card">
+      <h3>Dropped — asserted, but not supported by what was retrieved</h3>
+      <p class="hint">Shown rather than removed. A gate whose refusals are invisible
+      looks the same as a model that had nothing to say.</p>
+      ${a.dropped.map(d => `<div class="drop"><b>${esc(d.claim)}</b><em>${esc(d.why)}</em></div>`).join('')}
+    </article>` : '';
+
+  const unanswered = a.unanswered.length ? `
+    <article class="card">
+      <h3>Not answerable from the open web</h3>
+      ${a.unanswered.map(u => `<div class="drop">${esc(u)}</div>`).join('')}
+    </article>` : '';
+
+  const sources = a.sources.length ? `
+    <article class="card">
+      <h3>Read this run <span class="tag">${a.sources.length}</span></h3>
+      <div class="meta">${a.queries.map(q => `<span>${esc(q)}</span>`).join('')}</div>
+      ${a.sources.map(s => `<div class="drop"><a href="${esc(s.url)}" target="_blank" rel="noreferrer noopener">${esc(s.title || s.url)}</a></div>`).join('')}
+    </article>` : '';
+
+  $('#rout').innerHTML = `
+    <article class="card">
+      <h3>${esc(a.summary || 'No answer could be sourced.')}</h3>
+      ${pts || '<p class="hint">No point survived verification. That usually means the pages retrieved did not address the question — try naming a company, a city or a period.</p>'}
+    </article>${dropped}${unanswered}${sources}`;
+}
 
 /* ── boot ──────────────────────────────────────────────────────────────── */
 async function load() {

@@ -9,6 +9,16 @@
  */
 export * from './types.js';
 export * from './policy.js';
+/**
+ * The fetch path and the browser-render fallback moved here from
+ * `apps/worker/src` so that every caller — the collectors, the competitor
+ * watch, and now on-demand research — goes through ONE robots gate. The
+ * worker's own header already named this duplication as the right fix; a
+ * second implementation of "may we fetch this" is two answers to a question
+ * that must have one.
+ */
+export * from './transport.js';
+export * from './render.js';
 
 export * from './rss.js';
 export * from './hn.js';

@@ -25,6 +25,8 @@
     "@tmos/intel": "workspace:*",
     "@tmos/reason": "workspace:*",
     "@tmos/surface": "workspace:*",
-    "@tmos/world": "workspace:*"
+    "@tmos/world": "workspace:*",
+    "@tmos/research": "workspace:*",
+    "@tmos/shared": "workspace:*"
   }
 }

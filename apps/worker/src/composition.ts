@@ -62,7 +62,7 @@ import {
   type Env,
 } from '@tmos/shared';
 
-import { createTransport, type Transport } from './transport.js';
+import { createTransport, type Transport } from '@tmos/collectors';
 
 /**
  * PORT → ADAPTER. The whole table.

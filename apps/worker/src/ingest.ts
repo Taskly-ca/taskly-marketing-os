@@ -68,7 +68,7 @@ import {
   persistSignal,
   recentContent,
 } from './store.js';
-import type { Transport } from './transport.js';
+import type { Transport } from '@tmos/collectors';
 import { watchlist, type WatchEntry } from './watchlist.js';
 
 export interface IngestOptions {

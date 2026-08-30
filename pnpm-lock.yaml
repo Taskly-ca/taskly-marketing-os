@@ -47,6 +47,12 @@ importers:
       '@tmos/intel':
         specifier: workspace:*
         version: link:../../packages/intel
+      '@tmos/research':
+        specifier: workspace:*
+        version: link:../../packages/research
+      '@tmos/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
 
   apps/smoke:
     dependencies:
@@ -137,6 +143,12 @@ importers:
       '@tmos/reason':
         specifier: workspace:*
         version: link:../reason
+      '@tmos/research':
+        specifier: workspace:*
+        version: link:../research
+      '@tmos/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@tmos/surface':
         specifier: workspace:*
         version: link:../surface
@@ -207,6 +219,12 @@ importers:
       '@tmos/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@tmos/guardrails':
+        specifier: workspace:*
+        version: link:../guardrails
+
+  packages/research:
+    dependencies:
       '@tmos/guardrails':
         specifier: workspace:*
         version: link:../guardrails

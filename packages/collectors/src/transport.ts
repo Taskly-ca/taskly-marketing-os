@@ -43,10 +43,9 @@ import {
   hostOf,
   parseRobots,
   robotsAllows,
-  type CollectorContext,
-  type FetchTextResult,
   type RobotsRules,
-} from '@tmos/collectors';
+} from './policy.js';
+import type { CollectorContext, FetchTextResult } from './types.js';
 
 export type FetchText = CollectorContext['fetchText'];
 

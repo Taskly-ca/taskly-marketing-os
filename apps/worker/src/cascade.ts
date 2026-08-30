@@ -33,7 +33,7 @@ import {
 } from '@tmos/reason';
 import { createPostgresFindingStore } from '@tmos/adapters';
 
-import { createTransport } from './transport.js';
+import { createTransport } from '@tmos/collectors';
 import { CAC_CEILING_CENTS } from './change-finding.js';
 import { loadFactSheet } from './fact-sheet.js';
 import { createGroqVerifier, verifyForPublication } from './verifier.js';

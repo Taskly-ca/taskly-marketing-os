@@ -31,6 +31,7 @@ import { SEED_QUESTIONS, writePrediction, PredictionRejected } from '@tmos/intel
 import { createPostgresPredictionStore, createResolverContext } from '@tmos/adapters';
 
 import { readState } from './queries.js';
+import { runResearch } from './research-route.js';
 import { Runner, RunBusy, isStage } from './runner.js';
 
 /** dist/ sits one level under the app, so the repo root is three up. */
@@ -202,6 +203,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   }
 
   if (path === '/api/stream') return stream(res);
+
+  if (path === '/api/research') {
+    // GET, because EventSource cannot POST. The question rides in the query
+    // string and is never logged anywhere a URL would be.
+    return runResearch(res, url.searchParams.get('q') ?? '');
+  }
 
   if (path === '/api/run' && req.method === 'POST') {
     const body = await readBody(req);

@@ -12,6 +12,8 @@
   "dependencies": {
     "@tmos/db": "workspace:*",
     "@tmos/intel": "workspace:*",
-    "@tmos/adapters": "workspace:*"
+    "@tmos/adapters": "workspace:*",
+    "@tmos/research": "workspace:*",
+    "@tmos/shared": "workspace:*"
   }
 }

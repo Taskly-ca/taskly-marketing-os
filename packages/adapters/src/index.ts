@@ -73,3 +73,12 @@ export * from './testing/prediction.conformance.js';
 export * from './testing/decide.conformance.js';
 export * from './testing/outbox.conformance.js';
 export * from './testing/finding.conformance.js';
+
+/**
+ * On-demand research: the search providers, the robots-gated reader, and the
+ * budgeted model door. Wired by whoever has the credentials — the `research`
+ * package itself stays keyless and testable.
+ */
+export * from './research/search.js';
+export * from './research/read.js';
+export * from './research/ask.js';
