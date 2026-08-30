@@ -7,4 +7,5 @@ export * from './follow-up.js';
 export * from './grounded.js';
 export * from './sentences.js';
 export * from './stream.js';
+export * from './deep.js';
 export * from './eval/index.js';

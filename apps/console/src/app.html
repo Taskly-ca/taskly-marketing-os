@@ -376,6 +376,128 @@
   .steps li b{font-weight:500;color:var(--ink);font-family:var(--mono);font-size:10px;
               letter-spacing:.1em;text-transform:uppercase;margin-right:8px}
 
+  /* ── deep research: the progress surface ──────────────────────────────────
+     THE ONLY REASON THIS PANEL EXISTS IS THE ABANDON DECISION.
+
+     A fast answer is over in thirty seconds, so a status line is enough — you
+     could not usefully act on it anyway. A deep run is two to four minutes, and
+     for most of it the honest question in the reader's head is "is this going
+     anywhere, or am I paying for four minutes of the wrong search?" A spinner
+     answers that with nothing. So everything here is aimed at making that call
+     answerable at minute one:
+
+       · the PLAN is on screen before the first search, so the run can be judged
+         on its questions rather than on its elapsed time;
+       · every step reports `found` — NEW PROVEN SPANS — and a step that read
+         nine pages and proved nothing is styled as the warning it is, never as
+         a tick. That single distinction is what a "9 sources" counter destroys;
+       · the run's own reflection is printed, because a reader deciding whether
+         to let it keep spending deserves the run's reasoning, not a summary of
+         it written afterwards;
+       · Stop is a first-class control sitting beside the plan, not buried.
+
+     Unlike `.steps` this panel is OPEN by default and stays open. A collapsed
+     progress surface during a four-minute wait is a status line again. */
+  .deep{border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);
+        padding:14px 16px 12px;margin:0 0 20px}
+  .deep-head{display:flex;align-items:baseline;gap:10px 14px;flex-wrap:wrap;margin-bottom:5px}
+  .deep-meter{font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+              color:var(--faint);margin-left:auto}
+  .deep-why{color:var(--muted);font-size:12.5px;line-height:1.5;margin:0 0 11px;max-width:64ch}
+  .deep-bar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:0 0 12px}
+  .deep-bar button{font-size:11.5px;padding:4px 12px}
+  /* The one place in this panel the alarm colour is used, and it is used for
+     exactly one fact: steps have finished and nothing has been proved. */
+  .deep-warn{border:1px dashed var(--moved);border-radius:11px;padding:9px 12px;margin:0 0 12px;
+             color:var(--moved);font-size:12.5px;line-height:1.55;max-width:64ch}
+
+  .plan{list-style:none;margin:0;padding:0}
+  .plan > li + li.pstep{border-top:1px solid var(--line)}
+  .pstep{padding:9px 0 9px 27px;position:relative}
+  .pstep .mk{position:absolute;left:0;top:10px;width:18px;height:18px;border-radius:50%;
+             border:1px solid var(--line-strong);display:grid;place-items:center;
+             font-family:var(--mono);font-size:9px;line-height:1;color:var(--faint);
+             background:var(--surface)}
+  .pstep.running .mk{border-color:var(--brass);color:var(--brass-ink);background:var(--brass-tint);
+                     animation:pulse 1.15s ease-in-out infinite}
+  .pstep.done .mk{border-color:transparent;background:var(--brass-tint);color:var(--brass-ink)}
+  /* A finished step that proved nothing. Hollow and dotted — the same form
+     this file already uses for "not an observation" — because it must not read
+     as one more completed thing. */
+  .pstep.barren .mk{background:none;border-color:var(--moved);color:var(--moved);border-style:dotted}
+  .pstep.skipped .mk{border-style:dashed}
+  .pstep .qn{font-size:13.5px;line-height:1.45;color:var(--ink);overflow-wrap:anywhere}
+  .pstep.pending .qn{color:var(--muted)}
+  .pstep.skipped .qn{color:var(--faint)}
+  .pstep .why{font-size:12px;line-height:1.45;color:var(--muted);margin-top:3px;max-width:62ch}
+  /* A revised question never replaces its predecessor silently: the old text
+     stays, struck, under the new one. */
+  .pstep .was{font-size:12px;line-height:1.5;color:var(--faint);margin-top:5px;max-width:62ch}
+  .pstep .was b{font-weight:500;font-family:var(--mono);font-size:9px;letter-spacing:.1em;
+                text-transform:uppercase;margin-right:8px;color:var(--faint)}
+  .pstep .was s{text-decoration-color:var(--line-strong)}
+  /* The OLD question's outcome, carried with the old question. A reworded slot
+     must not inherit the result of the question it replaced. */
+  .pstep .was em{font-style:normal;display:block;margin:2px 0 0 calc(3ch + 8px);
+                 font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;color:var(--faint)}
+  .pstep .st{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-family:var(--mono);
+             font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;margin-top:6px;
+             color:var(--faint)}
+  .pstep .st .found{color:var(--brass-ink);background:var(--brass-tint);border-radius:5px;
+                    padding:1px 6px}
+  .pstep .st .nil{color:var(--moved);border:1px dotted var(--moved);border-radius:5px;padding:0 5px}
+  .pstep .st .det{font-family:var(--mono);letter-spacing:.04em;text-transform:none;
+                  color:var(--faint);min-width:0;overflow:hidden;text-overflow:ellipsis;
+                  white-space:nowrap;flex:1}
+  .tag-new{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+           color:var(--brass-ink);background:var(--brass-tint);border-radius:5px;padding:1px 5px;
+           margin-left:7px;vertical-align:1px}
+
+  /* A plan revision is an EVENT in the run, so it is rendered in the place it
+     happened rather than by quietly swapping the list. */
+  .prev{padding:10px 0 11px 27px;position:relative}
+  .prev .eyebrow{display:block;color:var(--moved);margin-bottom:4px}
+  .prev p{margin:0;font-size:12.5px;line-height:1.55;color:var(--muted);max-width:62ch}
+
+  /* The run's own reasoning, inset under the step it followed. */
+  .refl{margin:0 0 2px 27px;padding:9px 12px 10px;background:var(--ground-soft);
+        border-radius:10px;border-left:2px solid var(--line-strong)}
+  .refl .eyebrow{display:block;margin-bottom:5px}
+  .refl p + .eyebrow{margin-top:9px}
+  .refl p{margin:0;font-size:12.5px;line-height:1.55;color:var(--ink);max-width:62ch}
+  .refl ul{margin:5px 0 0;padding-left:17px}
+  .refl li{font-size:12px;line-height:1.5;color:var(--muted)}
+  .refl .stopline{margin-top:8px;padding-top:7px;border-top:1px solid var(--line);
+                  font-size:12.5px;line-height:1.5;color:var(--moved)}
+  .refl .stopline b{font-weight:500;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+                    text-transform:uppercase;margin-right:6px}
+
+  /* ── clarifying questions ─────────────────────────────────────────────────
+     Brass-edged, because it is the one card on the page that is waiting on the
+     reader rather than reporting to them. The whole design goal is that nobody
+     mistakes it for a result: nothing has run, nothing has been spent. */
+  .clarify{border:1px solid var(--brass-line);background:var(--surface);border-radius:var(--radius);
+           padding:16px 18px 15px;margin:0 0 20px}
+  .clarify .eyebrow{display:block;color:var(--brass-ink);margin-bottom:6px}
+  .clarify h3{font-size:15.5px;margin-bottom:6px}
+  .clarify .lead{color:var(--muted);font-size:13px;line-height:1.55;margin:0 0 12px;max-width:64ch}
+  .clarify .spend{font-size:13px;line-height:1.55;color:var(--ink);margin:0 0 15px;max-width:64ch}
+  .cq{margin:0 0 13px}
+  .cq label{display:block;font-size:13.5px;line-height:1.45;color:var(--ink);margin-bottom:6px}
+  .cq label .n{font-family:var(--mono);font-size:10px;color:var(--faint);margin-right:8px}
+  .cq input{width:100%;font:inherit;font-size:14px;padding:8px 12px;border-radius:10px;
+            border:1px solid var(--line);background:var(--ground);color:var(--ink)}
+  .cq input::placeholder{color:var(--faint)}
+  .cq input:focus{outline:none;border-color:var(--brass)}
+  .clarify .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:15px}
+  .clarify .fine{color:var(--faint);font-size:11.5px;line-height:1.5;margin-top:10px;max-width:64ch}
+  /* Answered: the card stays in the transcript as the record of what was asked
+     and what was said, rather than vanishing once it has done its job. */
+  .cans{margin:0;font-size:12.5px;line-height:1.6;color:var(--muted)}
+  .cans div{padding:3px 0}
+  .cans b{font-weight:500;color:var(--ink);display:block}
+  .cans i{font-style:normal;color:var(--faint)}
+
   /* ── sources ──────────────────────────────────────────────────────────── */
   .sources{margin:0 0 22px}
   .srchead{display:flex;align-items:baseline;gap:10px;margin-bottom:9px}
@@ -620,6 +742,7 @@
         <a href="/" title="The old dashboard">Classic console</a>
         <a href="?demo=1" title="Replay a scripted web run with no server">Demo</a>
         <a href="?demo=1&amp;mode=grounded" title="Replay a scripted grounded run — all four source kinds">Demo · grounded</a>
+        <a href="?demo=1&amp;mode=deep" title="Replay a scripted deep run — a clarifying question, a plan, a step that proves nothing, and the revision that follows. Timings compressed about 5:1.">Demo · deep</a>
       </div>
       <!-- Built from THEME_OPTIONS in the script, the same way the mode pills
            are: one table, one control, no chance of the labels and the values
@@ -744,9 +867,65 @@ function phaseLabel(turn, phase) {
   return PHASE_LABEL[phase] || phase || 'Working…';
 }
 
+/* Read once, up here, because the mode table below needs it: `?deep=1` is the
+   escape hatch that turns the Deep pill on, and `?demo=1` turns it on
+   unconditionally because a scripted run reaches no server and spends nothing. */
+const QS = new URLSearchParams(location.search);
+
+/* ══ IS DEEP RESEARCH ACTUALLY REACHABLE? ══════════════════════════════════
+
+   READ AGAINST `answer-route.ts` AT 2026-08-31, TWICE — AND THE ANSWER MOVED
+   BETWEEN THE TWO READINGS, WHICH IS WHY THIS IS WRITTEN DOWN RATHER THAN
+   ASSUMED.
+
+   FIRST READING: the route had no idea what `deep` was. `parseMode` mapped it
+   to `web`, so `?mode=deep` bought a FAST ANSWER UNDER A PILL SAYING DEEP —
+   the precise failure the grounded pill was caught in once already (see
+   renderModeNote), and worse here, because a fast answer wearing Deep's badge
+   looks like a deep run that went quickly.
+
+   SECOND READING, after the route landed: `parseMode` accepts `deep`,
+   `runnerFor` has a `deep` branch, `server.ts` relays the four frames and
+   reads the clarify replies — but `DEEP_ANSWER` was still a stub that
+   REJECTED. The pill stayed off, and the reason had changed under it: not
+   "you would be lied to" but "you would spend a request to be told no, and
+   leave a thread holding a question with no answer", because the route records
+   the thread and the user turn BEFORE the pipeline runs.
+
+   THIRD READING, and the one this constant is set from: `DEEP_ANSWER` is now
+   `streamDeep`, and it was DRIVEN rather than read. A real question was asked
+   against the real route: it came back with a real `clarify` (it caught which
+   Jiffy was meant, which is the failure §10 records web mode walking straight
+   into), then a four-step plan, four `step` frames and five `reflect` frames,
+   and finished in 1m 36s. So the pill is on.
+
+   There is still no capability endpoint, and the one probe available costs a
+   real request. So this is a constant, not a detection — and the run checks
+   itself afterwards regardless: an answer that arrives with NO PLAN behind it
+   is reported as not-a-deep-run whatever this constant says. See
+   `renderModeNote`. That is the part that survives a server whose build lags
+   its source.
+
+   THREE WAYS IT IS ON:
+     · `DEEP_WIRED`, here. Set it back to false the moment the runner behind it
+       stops being real, and the tooltip switches itself.
+     · `?deep=1`, an explicit opt-in for whoever is working on the route.
+     · `?demo=1`, always — the scripted stream reaches no server at all. */
+const DEEP_WIRED = true;
+const DEEP_ENABLED = DEEP_WIRED || QS.get('deep') === '1' || QS.get('demo') === '1';
+
+/** Kept, not deleted, because DEEP_WIRED goes back to false the day the runner
+ *  behind it does. A tooltip that has to be rewritten to turn a control off is
+ *  a tooltip that will not be. */
+const DEEP_OFF_TITLE =
+  'Not available on this server: the deep pipeline is not wired, so the runner behind this mode ' +
+  'refuses rather than writing prose no plan stands behind. Asking anyway would spend a request ' +
+  'to be told no and leave a thread with a question and no answer. Try ?demo=1 to see the whole ' +
+  'surface — plan, steps, a revision and a clarifying question — with no server and no spend.';
+
 /* ══ modes ═════════════════════════════════════════════════════════════════
 
-   Web · Grounded · Verified. One table, both pill groups, so the toggle
+   Web · Grounded · Verified · Deep. One table, both pill groups, so the toggle
    cannot mean one thing at the top of the page and another at the bottom.
 
    `param` is what rides in the query string, and all three are real: read
@@ -801,9 +980,26 @@ const MODES = {
          'are listed for. Use it when the answer feeds a pricing or positioning call.',
     placeholder: 'Ask something the answer has to be right about…',
   },
+  /* The only mode that is measured in minutes, and the only one that publishes
+     a plan you can stop. `enabled` is computed rather than declared — see
+     DEEP_ENABLED above for the three ways it becomes true and why none of them
+     is a probe. */
+  deep: {
+    label: 'Deep',
+    param: 'deep',
+    enabled: DEEP_ENABLED,
+    title: DEEP_ENABLED
+      ? 'Two to four minutes. Breaks the question into sub-questions, publishes the plan before it ' +
+        'searches anything, then reports what each step actually proved — so you can stop it at minute ' +
+        'one instead of finding out at minute four. It may ask you something first.'
+      : DEEP_OFF_TITLE,
+    sub: 'A long run that shows its work. The plan goes up before the first search, every step reports ' +
+         'how many new proven quotes it added — not how many pages it read — and you can stop it at any point.',
+    placeholder: 'Ask something worth three minutes — a decision, a market, a strategy…',
+  },
 };
 
-const MODE_ORDER = ['web', 'grounded', 'verified'];
+const MODE_ORDER = ['web', 'grounded', 'verified', 'deep'];
 
 /** Stored answers carry the pipeline's own name for the default mode. */
 const normalizeMode = (m) => {
@@ -898,9 +1094,10 @@ function toast(msg) {
  * One object, mutated in place; render functions read from it and touch only
  * the nodes that changed. No diffing, no re-render of the answer — the whole
  * reason this is not `ui.html`.
+ *
+ * `QS` is declared up by the mode table — the Deep pill's availability is read
+ * off the query string, and that decision has to be made before MODES is built.
  */
-const QS = new URLSearchParams(location.search);
-
 const S = {
   // `?mode=grounded` presets the pill, so a link can carry the mode as well as
   // the question — and so the grounded demo is one href, not a click.
@@ -947,6 +1144,28 @@ function newTurn(question) {
     epilogue: null,
     doneAt: null,
     els: null,
+
+    /* ── deep research ──────────────────────────────────────────────────────
+       `plan` is keyed by the step number the server owns — `PlanStep.n` is
+       documented stable across a revision, so a replan revises `question` and
+       never renumbers. That is what lets a revision be shown as a CHANGE to a
+       row rather than as a new list replacing the old one.
+
+       `timeline` is the chronology this panel renders: plan revisions and
+       reflections interleaved with the steps in the order they actually
+       arrived, because "the plan changed after step 2" is a fact about when,
+       and a panel that sorts it away has thrown that away. */
+    plan: new Map(),      // n -> {n, question, why, state, detail, found, was[], added}
+    planOrder: [],        // step numbers, in the order the plan first named them
+    revisions: [],        // {because, afterN, changed[], added[]}
+    reflects: [],         // {after, stillOpen[], note, stop}
+    foundTotal: 0,        // sum of `found` — PROVEN SPANS, never pages read
+    deepStartedAt: null,
+    tick: 0,              // the elapsed-time interval, cleared at finish
+    clarify: null,        // the ClarifyEvent, while it is unanswered
+    clarifyAnswers: null, // what the reader typed, once they have
+    reAsked: false,       // a second clarify with the same questions — see onClarify
+    stopped: false,
   };
 }
 
@@ -967,6 +1186,17 @@ const SUGGESTED = {
     'What is our commission rate?',
     'What have we decided about the poster platform fee?',
     'What did we forecast about competitor pricing this quarter?',
+  ],
+  /* Deliberately bigger than the others. A question a fast run answers well is
+     a question a deep run wastes three minutes on, and offering one here would
+     teach the reader that the mode is slow for nothing. Each of these needs
+     several sub-questions before it can be answered at all — which is exactly
+     what the plan is going to show. */
+  deep: [
+    'How should we price against Jiffy and TaskRabbit in the GTA over the next two quarters?',
+    'What would it take for a new marketplace to win Toronto home services?',
+    'Which of our competitors is most exposed if labour costs rise next year?',
+    'Where is GTA demand for home services growing fastest, and what is driving it?',
   ],
 };
 SUGGESTED.verified = SUGGESTED.web;
@@ -1125,7 +1355,12 @@ if (S.demo) {
   // the world / brain / ledger cards can be seen until the route supports them.
   const which = el('span', null, '');
   which.style.cssText = 'font-family:var(--mono);font-size:10px;letter-spacing:.1em';
-  const paintWhich = () => { which.textContent = S.mode === 'grounded' ? 'grounded script' : 'web script'; };
+  const paintWhich = () => {
+    // The deep script says its timings are compressed, because it is the one
+    // script whose whole subject is how long the real thing takes.
+    which.textContent = S.mode === 'deep' ? 'deep script — timings compressed ~5:1'
+      : S.mode === 'grounded' ? 'grounded script' : 'web script';
+  };
   paintWhich();
   b.insertBefore(which, b.querySelector('.spacer'));
   for (const btn of document.querySelectorAll('.modes button')) {
@@ -1361,6 +1596,18 @@ function buildTurn(turn) {
   status.append(live, toggle, steps);
   root.appendChild(status);
 
+  /* The clarify card sits ABOVE everything the run would produce, because when
+     it is on screen the run has not produced anything and has not started. */
+  const clarify = el('section', 'clarify hidden');
+  root.appendChild(clarify);
+
+  /* The deep panel goes above the sources for the same reason the sources go
+     above the prose: the plan is what makes the first ninety seconds legible,
+     and by the time a source card lands the reader has already decided whether
+     to stay. */
+  const deep = el('section', 'deep hidden');
+  root.appendChild(deep);
+
   /* sources — before the prose, deliberately: it is what makes the wait legible */
   const sources = el('section', 'sources hidden');
   const shead = el('div', 'srchead');
@@ -1404,8 +1651,9 @@ function buildTurn(turn) {
   const actions = el('div', 'actions hidden');
   root.appendChild(actions);
 
-  turn.els = { root, live, phase, detail, toggle, steps, sources, sgroups, modenote, legend,
-               scount: shead.lastChild, prose, cursor, blank, err, refusals, related, actions };
+  turn.els = { root, live, phase, detail, toggle, steps, clarify, deep, sources, sgroups,
+               modenote, legend, scount: shead.lastChild, prose, cursor, blank, err,
+               refusals, related, actions };
   return root;
 }
 
@@ -1894,6 +2142,698 @@ function onVerdict(turn, ev) {
   markForecastSentence(turn, s);
 }
 
+/* ══ DEEP RESEARCH — plan · step · reflect ═════════════════════════════════
+
+   events: plan     { steps: [{n, question, why}], revisedBecause? }
+           step     { n, state: running|done|skipped, detail?, found? }
+           reflect  { after, stillOpen: [], note, stop? }
+
+   THE ONE NUMBER THAT MATTERS IS `found`, AND IT IS NOT A COUNT OF PAGES.
+
+   The contract is explicit that `found` is NEW PROVEN SPANS — not documents
+   read, not results returned — and that a step which read nine pages and
+   proved nothing is the single most useful thing a watching reader can be
+   told. Everything about how a step renders follows from that: a finished step
+   with `found: 0` gets the hollow dotted marker this file already uses for
+   "not an observation", the word "nothing proved" in the alarm colour, and its
+   `detail` printed beside it so the nine pages are visible as effort that
+   bought nothing. It never gets the filled marker a productive step gets.
+
+   Two finished steps and nothing proved raises a banner saying so in words,
+   because that is the moment to stop and the interface should be the thing
+   that says it — not the clock. */
+
+const DEEP_LEAD =
+  'Deep runs take two to four minutes. The plan below went up before anything was searched, ' +
+  'so it can be judged on its questions rather than on how long it has been going. ' +
+  'Each step reports how many NEW proven quotes it added — not how many pages it read.';
+
+/** Elapsed, in the shortest form that is still exact. */
+function fmtElapsed(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + String(s % 60).padStart(2, '0') + 's';
+}
+
+/** The panel appears the moment a deep run starts — before the first `plan`,
+ *  so the four seconds of planning are not four seconds of nothing. */
+function deepBegin(turn) {
+  if (turn.deepStartedAt) return;
+  turn.deepStartedAt = Date.now();
+  turn.els.deep.classList.remove('hidden');
+  renderDeep(turn);
+  // Only the meter is repainted on the tick. The plan rows do not move.
+  turn.tick = setInterval(() => paintDeepMeter(turn), 1000);
+}
+
+function deepStopTick(turn) {
+  if (turn && turn.tick) { clearInterval(turn.tick); turn.tick = 0; }
+}
+
+/** The highest step that has already been reported on. A revision that arrives
+ *  now belongs after THAT row, because that is where in the run it happened. */
+function lastTouchedStep(turn) {
+  let last = 0;
+  for (const n of turn.planOrder) {
+    const s = turn.plan.get(n);
+    if (s && s.state !== 'pending') last = Math.max(last, n);
+  }
+  return last;
+}
+
+/**
+ * A REVISED PLAN IS A CHANGE TO THE PLAN ON SCREEN, NEVER A REPLACEMENT OF IT.
+ *
+ * `PlanStep.n` is documented stable across a revision — a replan revises
+ * `question` and never renumbers — and that is exactly what makes an honest
+ * render possible. Swapping the list for the new one would leave a reader who
+ * looked away for thirty seconds unable to tell that anything had changed, and
+ * a run that quietly rewrites its own questions mid-flight is the thing this
+ * whole panel exists to make visible.
+ *
+ * So a revision: keeps every old question, struck, under its replacement;
+ * marks genuinely new steps as added; marks steps the revision dropped as
+ * dropped rather than deleting the row; and prints `revisedBecause` as a dated
+ * event in the timeline, in the position it actually happened.
+ */
+function onPlan(turn, ev) {
+  deepBegin(turn);
+  const raw = (ev && Array.isArray(ev.steps)) ? ev.steps : [];
+  const because = String((ev && ev.revisedBecause) || '').trim();
+  const first = turn.planOrder.length === 0;
+  const changed = [];
+  const added = [];
+  const seen = new Set();
+  /* WHERE THIS REVISION HAPPENED, READ BEFORE ANYTHING IS TOUCHED.
+   *
+   * Rewording a step resets it to `pending`, so asking afterwards which step
+   * the run had reached gets the answer "the one before" — the demo rendered
+   * "the plan changed after step 1" for a revision caused by step 2 failing,
+   * which points the reader at the wrong step and hides the actual cause. */
+  const afterN = lastTouchedStep(turn);
+
+  for (const s of raw) {
+    const n = Number(s && s.n);
+    if (!Number.isFinite(n)) continue;
+    seen.add(n);
+    const question = String((s && s.question) || '').trim();
+    const why = String((s && s.why) || '').trim();
+    const have = turn.plan.get(n);
+    if (!have) {
+      turn.plan.set(n, { n, question, why, state: 'pending', detail: '', found: null,
+                         was: [], isNew: !first, dropped: false });
+      turn.planOrder.push(n);
+      if (!first) added.push(n);
+      continue;
+    }
+    have.dropped = false;
+    if (question !== '' && question !== have.question) {
+      /* A REWORDED SLOT DOES NOT INHERIT THE OLD QUESTION'S RESULT.
+       *
+       * Caught on the first render of the demo, and it is not cosmetic. Step 2
+       * read eleven pages, proved nothing, and was reworded because of it —
+       * and the row went on showing "done" until the new question reported,
+       * then showed the NEW question above the OLD question's outcome. The
+       * reflection underneath still said "nothing survived the check", so the
+       * panel contradicted itself.
+       *
+       * `n` is stable across a revision, but the QUESTION is what the outcome
+       * belongs to. So the old question keeps its own result, struck, and the
+       * slot goes back to pending until the revised question reports its own.
+       * `foundTotal` is deliberately NOT rolled back: those spans were really
+       * proved, by the question that proved them. */
+      have.was.push({ question: have.question, state: have.state,
+                      found: have.found, detail: have.detail });
+      have.question = question;
+      have.state = 'pending';
+      have.detail = '';
+      have.found = null;
+      changed.push(n);
+    }
+    if (why !== '') have.why = why;
+  }
+
+  // A step the revision left out. Not deleted — a plan that quietly loses a
+  // question is a plan whose reader cannot tell it ever had one.
+  if (!first) {
+    for (const n of turn.planOrder) {
+      const s = turn.plan.get(n);
+      if (s && !seen.has(n) && s.state === 'pending') s.dropped = true;
+    }
+  }
+
+  turn.planOrder.sort((a, b) => a - b);
+  if (!first) {
+    turn.revisions.push({
+      because, afterN, changed, added,
+      droppedCount: turn.planOrder.filter((n) => turn.plan.get(n).dropped).length,
+    });
+  }
+  renderDeep(turn);
+}
+
+/** `state` is a closed set on the wire. Anything else is left as-is rather
+ *  than guessed at, which shows up as a step that never leaves `pending` —
+ *  visibly wrong, rather than invisibly wrong. */
+const STEP_STATES = { running: true, done: true, skipped: true };
+
+function onStep(turn, ev) {
+  deepBegin(turn);
+  const n = Number(ev && ev.n);
+  if (!Number.isFinite(n)) return;
+  let s = turn.plan.get(n);
+  if (!s) {
+    // A step for a question that was never published. Rendered anyway — the
+    // alternative is dropping the only evidence that the plan and the run
+    // disagree about what is being done.
+    s = { n, question: '', why: '', state: 'pending', detail: '', found: null,
+          was: [], isNew: false, dropped: false, unplanned: true };
+    turn.plan.set(n, s);
+    turn.planOrder.push(n);
+    turn.planOrder.sort((a, b) => a - b);
+  }
+  const state = String((ev && ev.state) || '');
+  if (STEP_STATES[state]) s.state = state;
+  s.detail = String((ev && ev.detail) || '');
+  const found = Number(ev && ev.found);
+  if (Number.isFinite(found)) {
+    // `found` is a per-step count of NEW spans, so the run total is a sum and
+    // the delta has to be taken rather than the raw value re-added on a repeat.
+    turn.foundTotal += found - (Number.isFinite(s.found) ? s.found : 0);
+    s.found = found;
+  }
+  renderDeep(turn);
+}
+
+function onReflect(turn, ev) {
+  deepBegin(turn);
+  const after = Number(ev && ev.after);
+  turn.reflects.push({
+    after: Number.isFinite(after) ? after : 0,
+    stillOpen: (ev && Array.isArray(ev.stillOpen) ? ev.stillOpen : [])
+      .map(String).map((x) => x.trim()).filter((x) => x !== ''),
+    note: String((ev && ev.note) || '').trim(),
+    stop: (ev && typeof ev.stop === 'string' && ev.stop.trim() !== '') ? ev.stop.trim() : '',
+  });
+  renderDeep(turn);
+}
+
+/** Just the meter, so a per-second tick does not rebuild the plan. */
+function paintDeepMeter(turn) {
+  if (!turn.els || !turn.els.deepMeter) return;
+  const bits = [];
+  if (turn.deepStartedAt) {
+    bits.push(fmtElapsed((turn.doneAt || Date.now()) - turn.deepStartedAt));
+  }
+  const total = turn.planOrder.filter((n) => !turn.plan.get(n).dropped).length;
+  const settled = turn.planOrder.filter((n) => {
+    const s = turn.plan.get(n);
+    return s.state === 'done' || s.state === 'skipped';
+  }).length;
+  if (total > 0) bits.push(settled + '/' + total + ' steps');
+  // Named in full every time. "4 spans" beside a step count reads as four of
+  // something the run did; the word "proved" is the entire distinction.
+  bits.push(turn.foundTotal + (turn.foundTotal === 1 ? ' span proved' : ' spans proved'));
+  turn.els.deepMeter.textContent = bits.join('  ·  ');
+}
+
+function renderDeep(turn) {
+  const box = turn.els.deep;
+  box.replaceChildren();
+  box.classList.remove('hidden');
+
+  const head = el('div', 'deep-head');
+  head.appendChild(el('span', 'eyebrow', 'Deep research'));
+  const meter = el('span', 'deep-meter');
+  head.appendChild(meter);
+  box.appendChild(head);
+  turn.els.deepMeter = meter;
+
+  const running = !turn.doneAt && !turn.stopped && !turn.errored;
+  box.appendChild(el('p', 'deep-why', running
+    ? DEEP_LEAD
+    : 'The plan this run followed, and what each step actually proved. Kept on screen: an answer ' +
+      'is easier to judge when the questions behind it are visible.'));
+
+  /* THE ABANDON CONTROL. First-class, beside the plan, live from the first
+     second — not hidden behind a menu and not only offered once things look
+     bad, because by then it is minute four. */
+  if (running && !S.demo) {
+    const bar = el('div', 'deep-bar');
+    const stop = el('button', null, 'Stop this run');
+    stop.type = 'button';
+    stop.title = 'Stop showing this run here.';
+    stop.addEventListener('click', () => stopRun(turn));
+    bar.appendChild(stop);
+    // Said out loud because it is not what the button looks like it does. The
+    // route has no cancel channel — `sse.ts` writes into the response and
+    // nothing upstream watches for a closed socket — so closing the stream
+    // stops the RENDER, and the server finds out when a write fails.
+    bar.appendChild(el('span', 'deep-meter',
+      'stops the display — the server has no cancel channel yet'));
+    box.appendChild(bar);
+  } else if (running && S.demo) {
+    const bar = el('div', 'deep-bar');
+    const stop = el('button', null, 'Stop this run');
+    stop.type = 'button';
+    stop.addEventListener('click', () => stopRun(turn));
+    bar.appendChild(stop);
+    bar.appendChild(el('span', 'deep-meter', 'scripted — nothing is being spent'));
+    box.appendChild(bar);
+  }
+
+  /* The banner that exists so nobody has to infer it from a column of dotted
+     circles. Two settled steps and nothing proved is the abandon signal. */
+  const settled = turn.planOrder.filter((n) => {
+    const s = turn.plan.get(n);
+    return s.state === 'done' || s.state === 'skipped';
+  });
+  if (settled.length >= 2 && turn.foundTotal === 0) {
+    /* Tense matters. Mid-run this is advice — stop now. After the run it is a
+     * finding, and telling a reader to stop something that has already ended
+     * makes the banner read as decoration the next time it fires while it can
+     * still be acted on. Seen on the first live deep run, which finished 4/4
+     * steps having proved nothing at all. */
+    box.appendChild(el('div', 'deep-warn', running
+      ? settled.length + ' steps have finished and nothing has been proved yet — no quote from any ' +
+        'page read so far survived the verbatim check. Pages read is not progress. If the rest of ' +
+        'the plan rests on the same sources, this is the point to stop rather than at minute four.'
+      : 'All ' + settled.length + ' steps finished and nothing was proved. ' +
+        (turn.sources.length
+          ? turn.sources.length + ' page(s) were read and not one sentence on them survived the ' +
+            'verbatim check, so there was nothing this run could quote. '
+          : 'No page this run read carried a quotable sentence. ') +
+        'That is a result about these sources, not about the question.'));
+  }
+
+  if (turn.planOrder.length === 0) {
+    box.appendChild(el('p', 'deep-why',
+      running ? 'Working out the sub-questions. Nothing has been searched yet.'
+              : 'This run published no plan.'));
+    paintDeepMeter(turn);
+    return;
+  }
+
+  const list = el('ol', 'plan');
+  const usedRev = new Set();
+  const usedRefl = new Set();
+
+  // A revision that landed before any step ran, which is the planner correcting
+  // itself rather than the run doing so.
+  turn.revisions.forEach((r, i) => {
+    if (r.afterN === 0) { list.appendChild(revisionRow(r)); usedRev.add(i); }
+  });
+
+  for (const n of turn.planOrder) {
+    list.appendChild(stepRow(turn, turn.plan.get(n)));
+    // Reflection first, then the revision it justifies: that is the order they
+    // happen in, and reading them the other way round makes the revision look
+    // unprompted.
+    turn.reflects.forEach((rf, i) => {
+      if (rf.after === n && !usedRefl.has(i)) { list.appendChild(reflectRow(rf)); usedRefl.add(i); }
+    });
+    turn.revisions.forEach((r, i) => {
+      if (r.afterN === n && !usedRev.has(i)) { list.appendChild(revisionRow(r)); usedRev.add(i); }
+    });
+  }
+
+  // Anything anchored to a step that never appeared still gets rendered. A
+  // reflection is the run's own reasoning and dropping it because its anchor is
+  // missing would delete the very thing this panel is for.
+  turn.reflects.forEach((rf, i) => { if (!usedRefl.has(i)) list.appendChild(reflectRow(rf)); });
+  turn.revisions.forEach((r, i) => { if (!usedRev.has(i)) list.appendChild(revisionRow(r)); });
+
+  box.appendChild(list);
+  paintDeepMeter(turn);
+}
+
+const STEP_MARK = { pending: '·', running: '›', done: '✓', skipped: '–' };
+
+function stepRow(turn, s) {
+  const barren = s.state === 'done' && s.found === 0;
+  const li = el('li', 'pstep ' + s.state + (barren ? ' barren' : '') + (s.dropped ? ' skipped' : ''));
+
+  const mk = el('span', 'mk', barren ? '0' : (STEP_MARK[s.state] || '·'));
+  mk.setAttribute('aria-hidden', 'true');
+  li.appendChild(mk);
+
+  const qn = el('div', 'qn');
+  qn.appendChild(document.createTextNode(
+    s.question || (s.unplanned ? 'A step the plan never named' : 'Sub-question ' + s.n)));
+  if (s.isNew) {
+    const t = el('span', 'tag-new', 'added');
+    t.title = 'This sub-question was not in the original plan — it was added by a revision.';
+    qn.appendChild(t);
+  }
+  li.appendChild(qn);
+
+  if (s.why) li.appendChild(el('div', 'why', s.why));
+
+  // Every question this slot has previously carried — newest first, struck,
+  // each with the outcome it actually reached before it was replaced.
+  for (let i = s.was.length - 1; i >= 0; i--) {
+    const prev = s.was[i];
+    const was = el('div', 'was');
+    was.appendChild(el('b', null, 'was'));
+    was.appendChild(el('s', null, prev.question));
+    const bits = [];
+    if (prev.state === 'done') {
+      bits.push(prev.found === null ? 'done, found not reported'
+        : prev.found === 0 ? 'read, proved nothing'
+        : 'proved ' + prev.found + (prev.found === 1 ? ' span' : ' spans'));
+    } else if (prev.state === 'running') bits.push('was still running');
+    else if (prev.state === 'skipped') bits.push('skipped');
+    else bits.push('never ran');
+    if (prev.detail) bits.push(prev.detail);
+    was.appendChild(el('em', null, bits.join(' · ')));
+    li.appendChild(was);
+  }
+
+  const st = el('div', 'st');
+  if (s.dropped) {
+    st.appendChild(el('span', 'nil', 'dropped by a revision'));
+  } else if (s.state === 'running') {
+    st.appendChild(document.createTextNode('running'));
+  } else if (s.state === 'skipped') {
+    st.appendChild(document.createTextNode('skipped'));
+  } else if (s.state === 'done') {
+    if (s.found === null) {
+      // The contract makes `found` optional, and "not reported" is not zero.
+      st.appendChild(el('span', 'nil', 'found not reported'));
+    } else if (s.found === 0) {
+      const n = el('span', 'nil', 'nothing proved');
+      n.title = 'This step finished without adding a single quote that survived the verbatim check. ' +
+                'Whatever it read, none of it can be cited.';
+      st.appendChild(n);
+    } else {
+      st.appendChild(el('span', 'found',
+        '+' + s.found + (s.found === 1 ? ' span proved' : ' spans proved')));
+    }
+  } else {
+    st.appendChild(document.createTextNode('not started'));
+  }
+  if (s.detail) {
+    const d = el('span', 'det', s.detail);
+    d.title = s.detail;
+    st.appendChild(d);
+  }
+  li.appendChild(st);
+  return li;
+}
+
+function revisionRow(r) {
+  const li = el('li', 'prev');
+  li.appendChild(el('span', 'eyebrow',
+    r.afterN > 0 ? 'The plan changed after step ' + r.afterN : 'The plan changed before it started'));
+  li.appendChild(el('p', null, r.because ||
+    'The run revised its plan and gave no reason. The changed questions are marked below.'));
+  // Named by step number, so the banner points at the rows it is about rather
+  // than leaving the reader to find them.
+  const bits = [];
+  const nums = (a) => a.map((n) => '#' + n).join(', ');
+  if (r.changed.length) bits.push('reworded ' + nums(r.changed));
+  if (r.added.length) bits.push('added ' + nums(r.added));
+  if (r.droppedCount) bits.push('dropped ' + r.droppedCount);
+  if (bits.length) {
+    const p = el('p', null, bits.join(' · ') +
+      ' — a reworded step keeps its old question and its old result, struck, underneath.');
+    p.style.color = 'var(--faint)';
+    li.appendChild(p);
+  }
+  return li;
+}
+
+function reflectRow(rf) {
+  const li = el('li');
+  const box = el('div', 'refl' + (rf.stop ? ' stop' : ''));
+  box.appendChild(el('span', 'eyebrow',
+    rf.after > 0 ? 'What the run thought after step ' + rf.after : 'What the run thought'));
+  if (rf.note) box.appendChild(el('p', null, rf.note));
+  if (rf.stillOpen.length) {
+    box.appendChild(el('span', 'eyebrow', 'Still open'));
+    const ul = el('ul');
+    for (const o of rf.stillOpen) ul.appendChild(el('li', null, o));
+    box.appendChild(ul);
+  } else if (rf.note) {
+    /* SILENCE IS NOT CLOSURE. This line used to read "Nothing left open at this
+     * point", and the first live run showed why that is wrong: the final
+     * reflection of a run that proved NOTHING carried an empty `stillOpen`,
+     * directly under a previous reflection listing four open questions. The
+     * page then announced that everything was settled, about a run that had
+     * answered none of it. The frame reports what the run said; it cannot
+     * report what the run meant. */
+    const p = el('p', null, 'The run listed nothing as still open here.');
+    p.style.color = 'var(--faint)';
+    p.style.fontSize = '12px';
+    box.appendChild(p);
+  }
+  if (rf.stop) {
+    // "The plan is answered" and "the budget cap ended it" are different
+    // outcomes, and the contract says so. The reason is printed, never a
+    // generic "finished".
+    const s = el('div', 'stopline');
+    s.appendChild(el('b', null, 'stopped here'));
+    s.appendChild(document.createTextNode(rf.stop));
+    box.appendChild(s);
+  }
+  li.appendChild(box);
+  return li;
+}
+
+/**
+ * ABANDONING A RUN, AND WHAT IT HONESTLY DOES.
+ *
+ * It closes the EventSource, which stops the render. It does NOT cancel the
+ * run: `sse.ts` writes frames into the response and nothing upstream watches
+ * for a closed socket, so the server keeps going until a write fails. Saying
+ * "cancelled" here would be inventing a capability, so the wording is about
+ * the display and the fine print says where the run actually is.
+ */
+function stopRun(turn) {
+  if (turn.doneAt || turn.stopped) return;
+  turn.stopped = true;
+  turn.stoppedAt = turn.deepStartedAt ? fmtElapsed(Date.now() - turn.deepStartedAt) : '';
+  stopStream();
+  finishTurn(turn, null);
+  toast('Stopped — nothing more will be shown for this run');
+}
+
+/* ══ clarify — the round trip ══════════════════════════════════════════════
+
+   event: clarify { questions: string[], because: string } — AND THE STREAM ENDS.
+
+   That ending is not a failure and it is not a `done`. Nothing was searched,
+   no model wrote anything, and nothing was spent — the run stopped at the door
+   because the question was too broad to spend minutes on. The card therefore
+   has to say the one thing a reader will otherwise assume from a big box
+   appearing under their question: this has not started.
+
+   SSE has no upstream channel, so answering is a NEW REQUEST. That is the
+   contract's own reasoning and it decides the shape here: the answers are
+   collected in the page, the same turn is reset, and the stream is opened
+   again with the replies riding in the query string.
+
+   THE TRANSPORT IS THE ROUTE'S, READ OFF IT — repeated `a=` parameters, one
+   per clarifying question, IN THE ORDER `ClarifyEvent.questions` listed them.
+   `server.ts` reads them with `getAll('a')` and hands them to
+   `parseClarifications`, and `ClarifyEvent` carries no ids, so POSITION IS THE
+   ADDRESSING. Two consequences the page has to honour:
+
+     · AN INTERIOR BLANK KEEPS ITS SLOT. Dropping an unanswered question shifts
+       every later reply onto the wrong question, and the result is a
+       well-formed set of answers to a different set of questions — which
+       nothing downstream can detect. So a blank is sent as an empty `a=`.
+     · The caps are the route's: 8 replies, 500 characters each. Enforced here
+       too, so what is sent is what is used rather than what was silently cut.
+
+   The run still checks its own work: if a second clarify comes back carrying
+   the SAME questions, the answers did not arrive, and the card says exactly
+   that instead of looping silently. */
+
+const CLARIFY_PARAM = 'a';
+const CLARIFY_MAX = 8;        // MAX_CLARIFICATIONS in answer-route.ts
+const CLARIFY_CHARS = 500;    // MAX_CLARIFICATION_CHARS, ditto
+
+const sameQuestions = (a, b) =>
+  a.length === b.length && a.every((x, i) => x === b[i]);
+
+function onClarify(turn, ev) {
+  const questions = (ev && Array.isArray(ev.questions) ? ev.questions : [])
+    .map(String).map((s) => s.trim()).filter((s) => s !== '');
+  const because = String((ev && ev.because) || '').trim();
+
+  if (turn.clarifyAnswers &&
+      sameQuestions(turn.clarifyAnswers.map((a) => a.question), questions)) {
+    turn.reAsked = true;
+  }
+  turn.clarify = { questions, because };
+
+  // The stream ends here — but this is not `done`, so no refusals card, no
+  // actions bar, no cost line. There is nothing to report on yet.
+  deepStopTick(turn);
+  turn.els.live.classList.add('hidden');
+  turn.els.cursor.classList.add('hidden');
+  turn.els.deep.classList.add('hidden');
+  stopStream();
+  S.live = null;
+  setBusy(false);
+  renderClarify(turn);
+  nudgeScroll(false);
+}
+
+function renderClarify(turn) {
+  const box = turn.els.clarify;
+  box.replaceChildren();
+  box.classList.remove('hidden', 'answered');
+  const c = turn.clarify;
+
+  box.appendChild(el('span', 'eyebrow', 'Before it spends anything'));
+  box.appendChild(el('h3', null, 'It wants to know what you mean first'));
+  box.appendChild(el('p', 'lead', c.because ||
+    'The run judged the question too broad to spend two to four minutes on, and stopped to ask ' +
+    'before searching anything.'));
+  // The single most important line on this card.
+  box.appendChild(el('p', 'spend',
+    'Nothing has run. No search has been made, no page has been fetched and nothing has been ' +
+    'spent — the plan has not even been written yet. Answering starts the run; closing the tab ' +
+    'costs nothing.'));
+
+  if (turn.reAsked) {
+    box.appendChild(el('div', 'deep-warn',
+      'It has asked the same questions a second time, which means the answers you gave did not ' +
+      'reach the run. The route may not read them yet. Nothing has been spent — but answering ' +
+      'again is likely to land in the same place.'));
+  }
+
+  const inputs = [];
+  c.questions.forEach((q, i) => {
+    const wrap = el('div', 'cq');
+    const id = turn.id + '-cq' + i;
+    const label = el('label');
+    label.htmlFor = id;
+    label.appendChild(el('span', 'n', String(i + 1)));
+    label.appendChild(document.createTextNode(q));
+    const input = el('input');
+    input.id = id;
+    input.type = 'text';
+    input.autocomplete = 'off';
+    input.placeholder = 'Your answer — or leave it blank';
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); go.click(); }
+    });
+    wrap.append(label, input);
+    box.appendChild(wrap);
+    inputs.push(input);
+  });
+
+  if (c.questions.length === 0) {
+    box.appendChild(el('p', 'lead',
+      'It stopped to ask something and then sent no questions, so there is nothing here to answer. ' +
+      'Starting it anyway sends the question as you typed it.'));
+  }
+
+  const row = el('div', 'row');
+  const go = el('button', 'primary', 'Start the deep run');
+  go.type = 'button';
+  go.addEventListener('click', () => {
+    const answers = c.questions.map((q, i) => ({ question: q, answer: inputs[i].value.trim() }));
+    startAfterClarify(turn, answers);
+  });
+  const other = el('button', null, 'Ask something else');
+  other.type = 'button';
+  other.title = 'Leave this one unstarted and type a different question. Nothing has been spent.';
+  other.addEventListener('click', () => { $('#q1').focus(); });
+  row.append(go, other);
+  box.appendChild(row);
+
+  box.appendChild(el('p', 'fine',
+    'A blank answer tells the run you have no constraint there — it is not skipped, it is answered ' +
+    '"no preference". Your replies are sent as a new request: the stream that asked has already ' +
+    'ended, and there is no way back up it.'));
+}
+
+/** The card does not vanish once it has done its job — it becomes the record
+ *  of what was asked and what you said, above the answer it shaped. */
+function collapseClarify(turn) {
+  const box = turn.els.clarify;
+  box.replaceChildren();
+  box.classList.add('answered');
+  box.appendChild(el('span', 'eyebrow', 'It asked first — you answered'));
+  const list = el('div', 'cans');
+  for (const a of (turn.clarifyAnswers || [])) {
+    const row = el('div');
+    row.appendChild(el('b', null, a.question));
+    row.appendChild(a.answer === ''
+      ? el('i', null, 'left blank — no constraint')
+      : document.createTextNode(a.answer));
+    list.appendChild(row);
+  }
+  box.appendChild(list);
+}
+
+function startAfterClarify(turn, answers) {
+  turn.clarifyAnswers = answers;
+  turn.clarify = null;
+  collapseClarify(turn);
+  resetTurnForRerun(turn);
+  S.live = turn;
+  setBusy(true);
+  startRun(turn);
+  nudgeScroll(false);
+}
+
+/**
+ * Answering a clarify is a NEW REQUEST, so everything the previous request put
+ * on screen has to go — while the question, and the clarify record above it,
+ * stay. The alternative (a second turn) would print the question twice and
+ * separate the answers from the run they shaped.
+ */
+function resetTurnForRerun(turn) {
+  deepStopTick(turn);
+  turn.steps = [];
+  turn.sources = [];
+  turn.groups = new Map();
+  turn.spans = new Map();
+  turn.sentences = new Map();
+  turn.order = [];
+  turn.phase = '';
+  turn.phaseDetail = '';
+  turn.plan = new Map();
+  turn.planOrder = [];
+  turn.revisions = [];
+  turn.reflects = [];
+  turn.foundTotal = 0;
+  turn.deepStartedAt = null;
+  turn.epilogue = null;
+  turn.lastDone = null;
+  turn.doneAt = null;
+  turn.errored = false;
+  turn.stopped = false;
+
+  const e = turn.els;
+  e.sgroups.replaceChildren();
+  e.sources.classList.add('hidden');
+  e.steps.replaceChildren();
+  e.steps.classList.add('hidden');
+  e.toggle.classList.add('hidden');
+  e.toggle.setAttribute('aria-expanded', 'false');
+  e.deep.replaceChildren();
+  e.deep.classList.add('hidden');
+  e.legend.classList.add('hidden');
+  e.modenote.classList.add('hidden');
+  e.blank.classList.add('hidden');
+  e.err.classList.add('hidden');
+  e.refusals.classList.add('hidden');
+  e.related.classList.add('hidden');
+  e.actions.classList.add('hidden');
+  // The cursor lives inside .prose and sentenceOf inserts before it, so it is
+  // the one node that survives the clear.
+  e.prose.replaceChildren(e.cursor);
+  e.cursor.classList.add('hidden');
+  e.live.classList.remove('hidden');
+  e.phase.textContent = 'Planning searches…';
+  e.detail.textContent = '';
+}
+
 function showError(turn, msg) {
   turn.errored = true;
   const e = turn.els.err;
@@ -1966,6 +2906,27 @@ function finishTurn(turn, done) {
   turn.doneAt = Date.now();
   turn.els.live.classList.add('hidden');
   turn.els.cursor.classList.add('hidden');
+  // The plan panel stays — it is the record of what was asked and what each
+  // step proved — but the clock freezes and the Stop button goes, because a
+  // control that cannot do anything is a control that lies.
+  deepStopTick(turn);
+  /* A RUN REFUSED AT THE DOOR HAS NO WORK TO SHOW.
+   *
+   * Seen on the first live deep run: the concurrency guard refused the request
+   * instantly, and the panel — opened optimistically at submit so the planning
+   * seconds are not blank — was left reading "Deep research · 0s · 0 spans
+   * proved · this run published no plan", stacked under the error box. Three
+   * lines of ceremony about a run that never started, and the "0 spans proved"
+   * in particular reads as a result. The error IS the whole story, exactly as
+   * it is for the refusals card below. */
+  if (turn.deepStartedAt) {
+    if ((turn.errored || turn.stopped) && turn.planOrder.length === 0) {
+      turn.els.deep.replaceChildren();
+      turn.els.deep.classList.add('hidden');
+    } else {
+      renderDeep(turn);
+    }
+  }
   // A replayed answer has no steps to re-open, and "Completed 0 steps" is a
   // button that lies about having something behind it.
   if (turn.steps.length > 0) {
@@ -2014,6 +2975,23 @@ function renderBlank(turn, done) {
   });
   if (wrote || turn.errored) { box.classList.add('hidden'); return; }
 
+  /* Stopped is not empty, and it is not an error. The run was going somewhere;
+     the reader decided it was not worth the remaining minutes. What that leaves
+     behind is real — the plan and what each step proved are still on screen —
+     and the one thing that must not be implied is that the run failed. */
+  if (turn.stopped) {
+    box.append(
+      el('b', null, 'You stopped this run'),
+      document.createTextNode(
+        'Stopped' + (turn.stoppedAt ? ' at ' + turn.stoppedAt : '') + ', before an answer was ' +
+        'written. Everything that had arrived is above — the plan, the steps and what each one ' +
+        'proved. Nothing more will be shown here. There is no cancel channel to the server yet, ' +
+        'so the run may keep going there until it notices nobody is listening.'),
+    );
+    box.classList.remove('hidden');
+    return;
+  }
+
   const note = (done && typeof done.note === 'string' && done.note.trim() !== '')
     ? done.note.trim()
     : (turn.phaseDetail || '');
@@ -2042,6 +3020,35 @@ function renderBlank(turn, done) {
 function renderModeNote(turn) {
   const box = turn.els.modenote;
   box.replaceChildren();
+
+  /* THE SAME TRAP, ONE MODE ALONG — and it would be worse here.
+   *
+   * A grounded answer that came back off the web at least looked odd. A fast
+   * answer under the Deep pill looks like a deep run that happened to be quick,
+   * which is the most flattering possible way to be wrong.
+   *
+   * The route refuses an unwired `deep` today rather than downgrading it, so
+   * this should not fire — but it is checked anyway, and cheaply, because the
+   * tell is STRUCTURAL and needs no reading of the prose: a deep run publishes
+   * a plan before it searches anything. An answer with no plan behind it was
+   * not researched in stages, whatever the pill said and whatever the route
+   * intended. */
+  if (turn.mode === 'deep') {
+    if (turn.errored || turn.stopped || turn.planOrder.length > 0) {
+      box.classList.add('hidden');
+      return;
+    }
+    box.append(
+      el('b', null, 'Asked in deep mode — answered in one pass'),
+      document.createTextNode(
+        'No plan, no steps and no reflection arrived, so this question was never broken into ' +
+        'sub-questions and nothing was researched in stages. Whatever this server did, it was ' +
+        'not a deep run. Read what is below as an ordinary answer.'),
+    );
+    box.classList.remove('hidden');
+    return;
+  }
+
   const internalish = turn.sources.some((r) => r.kind !== 'web');
   if (turn.mode !== 'grounded' || turn.errored || turn.sources.length === 0 || internalish) {
     box.classList.add('hidden');
@@ -2077,7 +3084,12 @@ function renderRefusals(turn, done) {
   // unreachable server) has no refusals of its own to report — the error box
   // above IS the whole story, and three "nothing to report" lines under it read
   // as a gate that ran. It did not run.
-  if (turn.errored && turn.order.length === 0) { box.classList.add('hidden'); return; }
+  // A run stopped by the reader is the same case: the gate did not run, and
+  // three "nothing to report" lines under a stop notice read as one that did.
+  if ((turn.errored || turn.stopped) && turn.order.length === 0) {
+    box.classList.add('hidden');
+    return;
+  }
 
   const flagged = turn.order
     .map((n) => turn.sentences.get(n))
@@ -2147,7 +3159,7 @@ function renderRefusals(turn, done) {
     // does not exist reads as a gate that ran clean. It did not run.
     g2.appendChild(el('div', 'none',
       turn.mode !== 'verified'
-        ? 'No drop stage on a ' + (turn.mode === 'grounded' ? 'grounded' : 'web') +
+        ? 'No drop stage on a ' + (MODES[turn.mode] ? MODES[turn.mode].label.toLowerCase() : 'web') +
           ' run — every span is proven verbatim before the prose is written, so a claim is never ' +
           'written and then withdrawn. The drop list belongs to Verified mode.'
         : has('dropped')
@@ -2274,6 +3286,12 @@ function renderActions(turn, done) {
   }
   if (done && Number(done.flagged) > 0) bits.push(Number(done.flagged) + ' flagged');
   bits.push(turn.sources.length + ' sources');
+  // On a deep run the count that decides whether the minutes bought anything is
+  // proven spans, not sources — a run can read thirty pages and prove nothing.
+  if (turn.deepStartedAt) {
+    bits.push(turn.foundTotal + ' proved');
+    if (turn.doneAt) bits.push(fmtElapsed(turn.doneAt - turn.deepStartedAt));
+  }
   box.appendChild(el('span', 'cost', bits.join(' · ')));
   box.classList.remove('hidden');
 }
@@ -2355,6 +3373,20 @@ function plainAnswer(turn, withSources) {
   const prose = turn.order.map((n) => turn.sentences.get(n).raw).join(' ').replace(/\s+/g, ' ').trim();
   if (!withSources) return stripMarkers(prose);
   const lines = [turn.question, '', prose, ''];
+  // A deep answer pasted without its plan loses the part that makes it
+  // checkable: which questions were asked, and which of them proved nothing.
+  if (turn.planOrder.length) {
+    lines.push('Plan:');
+    for (const n of turn.planOrder) {
+      const s = turn.plan.get(n);
+      const state = s.dropped ? 'dropped'
+        : s.state === 'done' ? (s.found === null ? 'done, found not reported'
+            : s.found === 0 ? 'done, nothing proved' : 'done, +' + s.found + ' spans proved')
+        : s.state;
+      lines.push('  ' + n + '. ' + s.question + '  [' + state + ']');
+    }
+    lines.push('');
+  }
   for (const s of turn.sources) lines.push('[' + s.i + '] ' + s.title + ' — ' + (s.url || s.domain));
   const flagged = turn.order.map((n) => turn.sentences.get(n)).filter((s) => s.verdict === 'flagged');
   if (flagged.length) {
@@ -2553,6 +3585,9 @@ function stopStream() {
   if (S.es) { try { S.es.close(); } catch { /* already closed */ } S.es = null; }
   for (const t of S.demoTimers) clearTimeout(t);
   S.demoTimers = [];
+  // The deep panel's clock is the one thing that keeps ticking after the events
+  // stop, and a frozen page with a running timer reads as a live run.
+  if (S.live) deepStopTick(S.live);
 }
 
 /** Keeps the newest turn in view while it streams, unless the reader has
@@ -2585,8 +3620,26 @@ function submit(raw) {
   $('#turns').appendChild(buildTurn(turn));
   nudgeScroll(true);
   setBusy(true);
+  startRun(turn);
+}
 
+/**
+ * Start (or restart) the run for a turn that already has its DOM.
+ *
+ * Split out of `submit` for one reason: answering a clarifying question is a
+ * NEW REQUEST on the SAME turn — the stream that asked has ended and SSE has
+ * no way back up it — so the run has to be startable without minting a turn.
+ */
+function startRun(turn) {
+  // The panel goes up before the first `plan`, so the seconds spent working out
+  // the sub-questions are visibly work rather than visibly nothing.
+  if (turn.mode === 'deep') deepBegin(turn);
   if (S.demo) { runDemo(turn); return; }
+  openStream(turn);
+}
+
+function openStream(turn) {
+  const q = turn.question;
 
   // `thread` is what makes this a FOLLOW-UP rather than a second conversation:
   // the route loads the thread's messages as history, the planner resolves
@@ -2596,10 +3649,19 @@ function submit(raw) {
   // value invented here would be a guess about a vocabulary answer-route.ts
   // owns. Grounded sends one and then checks the answer for evidence it was
   // honoured — see renderModeNote.
-  const param = MODES[S.mode] && MODES[S.mode].param;
+  const param = MODES[turn.mode] && MODES[turn.mode].param;
+  // The clarify replies, riding back in the query string because the stream
+  // that asked for them has already ended. One `a=` per question, in order,
+  // interior blanks kept — position is the addressing. See CLARIFY_PARAM.
+  const answers = Array.isArray(turn.clarifyAnswers) ? turn.clarifyAnswers : [];
+  const replies = answers.slice(0, CLARIFY_MAX)
+    .map((a) => '&' + CLARIFY_PARAM + '=' +
+      encodeURIComponent(String(a.answer || '').slice(0, CLARIFY_CHARS)))
+    .join('');
   const url = S.endpoint + '?q=' + encodeURIComponent(q) +
     (S.threadId ? '&thread=' + encodeURIComponent(S.threadId) : '') +
-    (param ? '&mode=' + encodeURIComponent(param) : '');
+    (param ? '&mode=' + encodeURIComponent(param) : '') +
+    replies;
 
   let got = 0;
   const es = new EventSource(url);
@@ -2624,6 +3686,16 @@ function submit(raw) {
     stopStream();
   });
   on(EPILOGUE_EVENT, (d) => applyEpilogue(turn, d));
+
+  /* The four deep frames. Registered unconditionally rather than only in deep
+     mode: a listener costs nothing, and the alternative is a pipeline that
+     starts publishing a plan while the browser silently ignores it because a
+     pill said Web. `onPlan` opens the panel itself, so whichever arrives first
+     is enough. */
+  on('plan', (d) => onPlan(turn, d));
+  on('step', (d) => onStep(turn, d));
+  on('reflect', (d) => onReflect(turn, d));
+  on('clarify', (d) => onClarify(turn, d));
   on('done', (d) => {
     finishTurn(turn, d);
     stopStream();
@@ -2636,7 +3708,12 @@ function submit(raw) {
   // `error` is EventSource's transport failure, never an application error —
   // which is exactly why the contract calls the other one `error_msg`.
   es.onerror = () => {
-    if (turn.doneAt) { stopStream(); return; }
+    if (turn.doneAt || turn.stopped) { stopStream(); return; }
+    // A `clarify` ENDS THE STREAM — that is the contract, not a fault. The
+    // close that follows it must not be reported as a dropped connection, or
+    // the one moment the run is politely waiting on the reader looks like the
+    // server falling over.
+    if (turn.clarify) { stopStream(); return; }
     stopStream();
     showError(turn, got === 0
       ? 'Could not reach ' + S.endpoint + '. The answer route may not be running — try ?demo=1 to see the interface with scripted events.'
@@ -2725,6 +3802,7 @@ function at(ms, fn) { S.demoTimers.push(setTimeout(fn, ms)); }
  *  · sentences are numbered FROM ZERO.
  */
 function runDemo(turn) {
+  if (turn.mode === 'deep') { runDeepDemo(turn); return; }
   if (turn.mode === 'grounded') { runGroundedDemo(turn); return; }
   runWebDemo(turn);
 }
@@ -2888,6 +3966,238 @@ function runGroundedDemo(turn) {
     detail: G_SENTENCES.length + ' sentence(s), 1 flagged' }));
   at(t + 1450, () => applyEpilogue(turn, G_EPILOGUE));
   at(t + 1600, () => { finishTurn(turn, G_DONE); nudgeScroll(false); });
+}
+
+/* ══ ?demo=1&mode=deep — the multi-minute run, without the minutes ══════════
+
+   WHAT THIS SCRIPT IS FOR. A deep run is two to four minutes long and costs
+   real money, so the surface that makes those minutes legible is exactly the
+   surface nobody would ever iterate on if exercising it required paying for a
+   four-minute pipeline. Every hard case it has to handle is in here, because
+   each one is invisible in a happy-path fixture:
+
+     · A CLARIFY ROUND TRIP. The stream ends, the reader answers, a NEW request
+       starts. This is the only way to see that the card says "nothing has been
+       spent" while it waits, and that the answers survive into the run.
+     · A STEP THAT PROVED NOTHING. Step 2 reads eleven pages and adds zero
+       spans. It must not look like progress, and it is what triggers the
+       revision — which is the honest causal story: the plan changed because a
+       step failed, not because a model felt like it.
+     · A PLAN REVISION with a reason, one reworded question and one added.
+     · A SKIPPED step, which is neither done nor failed.
+     · A REFLECT CARRYING `stop`, with the reason — "the plan is answered" and
+       "the budget ran out" are different endings.
+     · A FLAGGED sentence whose failure is arithmetic: every quote in it is
+       real and correctly cited, and the two dollar figures it computes are in
+       none of them. That is precisely what `flagged` means and precisely what
+       it does not mean.
+
+   TIMINGS ARE COMPRESSED, roughly 5:1 against a real run, and the banner says
+   so. The SHAPE is what is being reviewed — plan before search, steps landing
+   one at a time, minutes of no prose — and the shape survives compression.
+   Everything below is a frame from `events.ts` dispatched through the same
+   handlers the live EventSource calls. */
+
+const D_CLARIFY = {
+  because:
+    'Two to four minutes is a long time to spend on the wrong reading of this. "Pricing against ' +
+    'them" could mean our commission, what a poster pays at checkout, or what a Tasker takes home ' +
+    '— and those three have different answers and different competitors.',
+  questions: [
+    'Which price do you mean — our commission, what a poster pays at checkout, or what a Tasker takes home?',
+    'All categories, or the curated fixed-price flows only?',
+    'GTA only, or does the answer have to hold if we open a second city?',
+  ],
+};
+
+const D_PLAN_1 = {
+  steps: [
+    { n: 1, question: 'What do Jiffy and TaskRabbit charge a GTA poster right now, end to end?',
+      why: 'Our number is only comparable against theirs at the same point in the flow.' },
+    { n: 2, question: 'How have those two prices moved over the last four quarters?',
+      why: 'One reading cannot tell a trend from a promotion.' },
+    { n: 3, question: 'What does a GTA Tasker take home per job on each platform?',
+      why: 'Supply follows take-home, and a take-rate that starves supply is not a price.' },
+    { n: 4, question: 'What have we already written down about our own fee model, and why?',
+      why: 'A pricing call has to be consistent with the one already made, or say that it overturns it.' },
+  ],
+};
+
+/* The revision. `n` is stable — step 2 keeps its number and changes its
+   question — which is what lets the panel show a CHANGE instead of a swap. */
+const D_PLAN_2 = {
+  revisedBecause:
+    'Step 2 proved nothing: neither site publishes a price history, and the archive snapshots that ' +
+    'would show the movement are not fetchable. The trend cannot come from their pages, so it has ' +
+    'to come from our own readings of them — which is a question our records can actually answer.',
+  steps: [
+    { n: 1, question: 'What do Jiffy and TaskRabbit charge a GTA poster right now, end to end?',
+      why: 'Our number is only comparable against theirs at the same point in the flow.' },
+    { n: 2, question: 'What did our own world model record for those prices each time we read them?',
+      why: 'We have dated readings of both pages. That is a history their sites do not publish.' },
+    { n: 3, question: 'What does a GTA Tasker take home per job on each platform?',
+      why: 'Supply follows take-home, and a take-rate that starves supply is not a price.' },
+    { n: 4, question: 'What have we already written down about our own fee model, and why?',
+      why: 'A pricing call has to be consistent with the one already made, or say that it overturns it.' },
+    { n: 5, question: 'What would a change in our take-rate do to what a Tasker earns per job?',
+      why: 'The two numbers move together, and setting one without the other is half a decision.' },
+  ],
+};
+
+const D_SOURCES = [
+  { i: 1, kind: 'world', url: 'https://www.jiffyondemand.com/pricing',
+    domain: 'jiffyondemand.com', title: 'Jiffy — what a handyman visit costs',
+    observedAt: '2026-08-28T13:40:00.000Z' },
+  { i: 2, kind: 'world', url: 'https://www.taskrabbit.ca/toronto/handyman',
+    domain: 'taskrabbit.ca', title: 'TaskRabbit Toronto — handyman rates',
+    observedAt: '2026-07-14T09:05:00.000Z' },
+  { i: 3, kind: 'brain',
+    url: 'taskly-brain/60-business/pricing/PRICING_v3.md § Pricing v3 › 4. Commission and what it covers',
+    domain: 'brain', title: 'taskly-brain/60-business/pricing/PRICING_v3.md' },
+  { i: 4, kind: 'brain',
+    url: 'taskly-brain/70-decisions/ADR-005-two-sided-fee-model.md § ADR-005 › The poster side',
+    domain: 'brain', title: 'taskly-brain/70-decisions/ADR-005-two-sided-fee-model.md' },
+  { i: 5, kind: 'web', url: 'https://www.thestar.com/business/home-services-prices-2026/',
+    domain: 'thestar.com', title: 'What Torontonians paid for home help this year' },
+  { i: 6, kind: 'web', url: 'https://www.statcan.gc.ca/en/subjects/household-spending',
+    domain: 'statcan.gc.ca', title: 'Household spending on home maintenance services' },
+];
+
+const D_SPANS = [
+  { id: 1, sourceIndex: 1, quote: 'Handyman visits start at $99 for the first hour, billed in 30-minute increments after that.' },
+  { id: 2, sourceIndex: 2, quote: 'Taskers set their own rates. Handyman rates in Toronto start around $45/hr.' },
+  { id: 3, sourceIndex: 3, quote: 'COMMISSION_RATE = 0.2 — the poster pays the agreed deal and the Tasker receives 80% on release.' },
+  { id: 4, sourceIndex: 4, quote: 'The poster platform fee is max(4.9%, $2.99), charged once, at hire.' },
+  { id: 5, sourceIndex: 5, quote: 'Households in the GTA reported paying a median $120 for a single home-repair visit.' },
+  { id: 6, sourceIndex: 6, quote: 'Canadian households spent an average of $1,161 on home maintenance and repair services.' },
+];
+
+const D_SENTENCES = [
+  { text: 'Jiffy’s own page said handyman visits start at $99 for the first hour when we read it on 28 August [1], while TaskRabbit lists tasker-set rates starting around $45/hr as we read it in mid-July [2].',
+    verdict: 'confirmed' },
+  { text: 'Our take-rate is 20% of the agreed deal with the Tasker receiving 80% on release [3], and the poster pays max(4.9%, $2.99) once, at hire [4].',
+    verdict: 'confirmed' },
+  { text: 'Against a median $120 GTA repair visit [5] that puts the poster-side add-on at $5.88 and the Tasker’s take at $96.',
+    verdict: 'flagged',
+    why: 'The $120 median and both fee rules are quoted correctly. The two dollar figures are arithmetic this run did — neither $5.88 nor $96 appears in any span it cites.' },
+  { text: 'Neither competitor publishes a price history, so nothing here establishes a trend: there are two readings, six weeks apart [1][2].',
+    verdict: 'confirmed' },
+  { text: 'For scale, Canadian households spend an average of $1,161 a year on home maintenance and repair services [6].',
+    verdict: 'confirmed' },
+];
+
+const D_DONE = { costCents: 2.84, threadId: 'p1', messageId: 'pm1', flagged: 1 };
+
+const D_EPILOGUE = {
+  related: [
+    'What would our take-home look like to a Tasker at 15% instead of 20%?',
+    'Which of our competitors’ prices have we read more than twice?',
+    'What did we decide about the poster fee label, and is it still open?',
+  ],
+  unanswered: [
+    'What a poster pays end to end on either platform — neither publishes an all-in total.',
+    'How either price has moved: no fetchable history exists on either site.',
+    'Whether any of this holds outside the GTA.',
+  ],
+};
+
+function runDeepDemo(turn) {
+  // Clarify happens at most once per run, before any retrieval — so it fires on
+  // the first question of a thread and never on a follow-up, which is where a
+  // real run has history to resolve against.
+  if (!turn.clarifyAnswers && S.turns.indexOf(turn) === 0) {
+    at(780, () => onClarify(turn, D_CLARIFY));
+    return;
+  }
+  runDeepScript(turn);
+}
+
+function runDeepScript(turn) {
+  let t = 0;
+
+  at(t += 120, () => onStatus(turn, { phase: 'planning', detail: 'breaking the question into sub-questions' }));
+  at(t += 1500, () => { onPlan(turn, D_PLAN_1); nudgeScroll(false); });
+
+  /* Step 1 — reads a lot, proves a little. */
+  at(t += 700, () => onStatus(turn, { phase: 'searching', detail: 'jiffy handyman price toronto · taskrabbit toronto rates · gta handyman callout fee' }));
+  at(t += 200, () => onStep(turn, { n: 1, state: 'running', detail: 'jiffyondemand.com · taskrabbit.ca · 7 more' }));
+  at(t += 2600, () => onStatus(turn, { phase: 'reading', detail: '31 result(s)' }));
+  at(t += 1800, () => { onStep(turn, { n: 1, state: 'done', found: 2, detail: '9 pages read' }); nudgeScroll(false); });
+  at(t += 500, () => onReflect(turn, {
+    after: 1,
+    note: 'Both publish a starting price and neither publishes an all-in total, so an end-to-end ' +
+          'comparison has to be assembled rather than read off a page.',
+    stillOpen: ['What a poster actually pays after fees on either platform',
+                'Whether the starting price includes a callout charge'],
+  }));
+
+  /* Step 2 — THE ONE THAT MATTERS. Eleven pages, nothing proved. */
+  at(t += 600, () => onStep(turn, { n: 2, state: 'running', detail: 'archive.org · pricing pages, 2025 snapshots' }));
+  at(t += 3400, () => { onStep(turn, { n: 2, state: 'done', found: 0, detail: '11 pages read, none quotable' }); nudgeScroll(false); });
+  at(t += 500, () => onReflect(turn, {
+    after: 2,
+    note: 'Nothing survived the check. Both sites carry only today’s price, and the archived ' +
+          'snapshots that would show the movement did not fetch.',
+    stillOpen: ['How either price has moved since 2025'],
+  }));
+
+  /* …which is why the plan changes. */
+  at(t += 900, () => { onPlan(turn, D_PLAN_2); nudgeScroll(false); });
+  at(t += 400, () => onStep(turn, { n: 2, state: 'running', detail: 'our world model — readings of both pages' }));
+  at(t += 2100, () => onStep(turn, { n: 2, state: 'done', found: 2, detail: '2 dated readings' }));
+
+  /* Sources start landing once there is something proven to attach them to. */
+  D_SOURCES.slice(0, 2).forEach((s, i) => at(t + 200 + i * 420, () => { onSource(turn, s); nudgeScroll(false); }));
+  t += 200 + 2 * 420;
+
+  at(t += 500, () => onStep(turn, { n: 3, state: 'running', detail: 'tasker earnings, both platforms' }));
+  at(t += 2300, () => onStep(turn, { n: 3, state: 'done', found: 1, detail: '6 pages read' }));
+
+  at(t += 400, () => onStep(turn, { n: 4, state: 'running', detail: 'our own documents' }));
+  D_SOURCES.slice(2, 4).forEach((s, i) => at(t + 300 + i * 400, () => { onSource(turn, s); nudgeScroll(false); }));
+  at(t += 1900, () => onStep(turn, { n: 4, state: 'done', found: 1, detail: 'PRICING_v3 · ADR-005' }));
+
+  /* Skipped is neither done nor failed, and it says why. */
+  at(t += 500, () => onStep(turn, { n: 5, state: 'skipped',
+    detail: 'nothing to retrieve — it is arithmetic on the other four' }));
+
+  D_SOURCES.slice(4).forEach((s, i) => at(t + 200 + i * 420, () => { onSource(turn, s); nudgeScroll(false); }));
+  t += 200 + 2 * 420;
+
+  at(t += 400, () => onReflect(turn, {
+    after: 5,
+    note: 'The plan is answered for the GTA and for our own fee model. The second-city part of the ' +
+          'question is not, and more searching will not settle it — nothing read says anything about ' +
+          'a market we do not operate in.',
+    stillOpen: ['Whether any of this holds outside the GTA'],
+    stop: 'the plan is answered — what is left needs a market we have no evidence for, not more searching',
+  }));
+
+  at(t += 600, () => onStatus(turn, { phase: 'attributing', detail: D_SOURCES.length + ' document(s)' }));
+  D_SPANS.forEach((s, i) => at(t + 150 + i * 70, () => onSpan(turn, s)));
+  t += 150 + D_SPANS.length * 70;
+
+  at(t += 500, () => onStatus(turn, { phase: 'writing' }));
+  t += 300;
+
+  D_SENTENCES.forEach((sent, idx) => {
+    const n = idx;
+    for (const piece of chunk(sent.text)) {
+      t += 20 + Math.random() * 30;
+      const ms = t;
+      S.demoTimers.push(setTimeout(() => { feedDelta(turn, n, piece); nudgeScroll(false); }, ms));
+    }
+    const settleAt = t + 850;
+    S.demoTimers.push(setTimeout(() => {
+      if (idx === D_SENTENCES.length - 1) onStatus(turn, { phase: 'checking' });
+      onVerdict(turn, { n, verdict: sent.verdict, why: sent.why });
+    }, settleAt));
+  });
+
+  at(t + 1400, () => onStatus(turn, { phase: 'done',
+    detail: D_SENTENCES.length + ' sentence(s), 1 flagged' }));
+  at(t + 1550, () => applyEpilogue(turn, D_EPILOGUE));
+  at(t + 1750, () => { finishTurn(turn, D_DONE); nudgeScroll(false); });
 }
 
 /** Split into 2–7 character pieces, deliberately cutting through "[4]" so the

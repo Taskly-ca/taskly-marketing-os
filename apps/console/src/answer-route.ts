@@ -108,6 +108,81 @@
  * field and it holds Verified mode's refused CLAIMS; putting span-level
  * refusals in it would file one kind of refusal under another kind's name,
  * which is the re-labelling `answerPayloadFor` already refuses to do.
+ *
+ * ── DEEP MODE: FOUR CONTRACT EVENTS, RELAYED AND NOT RESHAPED ──────────────
+ *
+ * `plan`, `step`, `reflect` and `clarify` are `events.ts`'s, not this route's,
+ * and the difference from `epilogue`/`unused` above is the whole point: those
+ * two are frames this file INVENTED because no contract carried them. These
+ * four already exist, `DEEP_EVENTS` names them, and the route's only job is to
+ * put each payload on the wire under its own name, byte for byte. Anything this
+ * file adds to a `PlanEvent` on the way past is a second contract.
+ *
+ * They are relayed for deep mode alone. A web or grounded run is handed the
+ * callbacks (one deps object is composed per request) and never calls them,
+ * exactly as it is handed `onUnused` and never calls it — and a reader must
+ * read "no `plan` frame" as "this mode does not plan", never as "the plan was
+ * empty".
+ *
+ * ── THE CLARIFY ROUND TRIP ─────────────────────────────────────────────────
+ *
+ * `ClarifyEvent` ENDS the stream: SSE has no upstream channel, so the replies
+ * arrive as a NEW request. The whole design is four decisions:
+ *
+ *  1. **They ride in as repeated `a=` query parameters, POSITIONALLY.**
+ *     `ClarifyEvent` is `{questions: string[], because}` — no ids — so position
+ *     is the only correspondence the contract offers, and minting a key here
+ *     would be inventing the half of a contract the pipeline does not share.
+ *     Which is why `parseClarifications` keeps an INTERIOR blank: a skipped
+ *     question that is dropped rather than held shifts every later answer onto
+ *     the wrong question, and nothing downstream can see that it happened.
+ *  2. **They reach the pipeline as answers, never as the question.** They are
+ *     a field on `DeepAnswerDeps`, not text concatenated onto `q`. Concatenating
+ *     would make "Toronto only" a phrase the writer sees, and the run's own
+ *     question would no longer be the one the reader typed.
+ *  3. **They are evidence of nothing.** Clarifications are reader-authored text
+ *     arriving in a URL. They may shape the plan — that is what they are for —
+ *     and they may never be quoted, cited or carried into generation as fact.
+ *     Same boundary as `history`, for the same reason, and the enforcement is
+ *     the same one: the shape. There is no span, no source and no citation a
+ *     clarification can become.
+ *  4. **They are capped** — `MAX_CLARIFICATIONS`, and a length per reply. A GET
+ *     parameter that reaches a planner prompt is untrusted input with a token
+ *     bill attached.
+ *
+ * ── AND WHAT AN UNANSWERED CLARIFY LEAVES BEHIND: A REAL TURN ──────────────
+ *
+ * Decided deliberately, because the alternative is defensible. By the time the
+ * pipeline can ask, the thread and the user message already exist — the clarify
+ * is a pre-retrieval gate INSIDE the run, and the run's question is recorded
+ * before the run starts (see `runAnswerStream`'s ordering note). So the choice
+ * is not "leave a trace or not"; it is what the trace SAYS.
+ *
+ * The route writes the clarifying questions as the assistant turn. Three
+ * reasons, in order of how much they matter:
+ *
+ *  - **Otherwise an abandoned clarify is indistinguishable from a crash.** A
+ *    thread holding a question and no answer is exactly what a run that died
+ *    halfway leaves, and `historyFor` drops such a question rather than report
+ *    it answered with silence. Two very different events would arrive at the
+ *    reader, and at us, wearing one shape.
+ *  - **The questions have to survive the tab closing.** A clarify asked at
+ *    minute zero and answered tomorrow has lost the questions it was answering
+ *    if they lived only in a stream that ended.
+ *  - **It is what happened.** Somebody asked, and we asked back. A thread that
+ *    renders that is a record; a thread that renders half of it is clutter, and
+ *    the clutter reading comes from storing the question alone.
+ *
+ * The replies then ride into a SECOND request, whose user turn is stored as the
+ * question with the replies under it (`userBodyFor`) — so one exchange spread
+ * over two HTTP requests reads back as one exchange. Nothing is rewritten: the
+ * reader typed both halves.
+ *
+ * WHAT IS NOT SOLVED. The clarify turn re-enters a later follow-up's context
+ * through `historyFor` as a turn whose "answer" is a set of questions. That is
+ * accurate — it carries no claim and no figure — but it is a turn shape the
+ * planner has never been shown before, and nothing here proves it plans well
+ * against one.
  */
 import type { ServerResponse } from 'node:http';
 import {
@@ -119,12 +194,14 @@ import {
   planSearches,
   research,
   streamAnswer,
+  streamDeep,
   streamGrounded,
+  DEFAULT_DEEP_BUDGET,
 } from '@tmos/research';
 import { randomUUID } from 'node:crypto';
 
 import { db, sql } from '@tmos/db';
-import { loadEnv, type BudgetLimits } from '@tmos/shared';
+import { estimateCostCents, loadEnv, MODELS, type BudgetLimits } from '@tmos/shared';
 import {
   appendMessage,
   createAsk,
@@ -145,14 +222,17 @@ import type {
   AskPort,
   AskStreamPort,
   CitableSpan,
+  ClarifyEvent,
   ConversationTurn,
   DeltaEvent,
   Dropped,
   DroppedSpan,
   Expectation,
+  PlanEvent,
   Point,
   ReadDoc,
   ReadPort,
+  ReflectEvent,
   GroundedUniverse,
   ResearchAnswer,
   ResearchDeps,
@@ -161,6 +241,7 @@ import type {
   SourceEvent,
   SpanEvent,
   StatusEvent,
+  StepEvent,
 } from '@tmos/research';
 
 import { dailyBudget, noteSpend, refuseForBudget } from './budget-boot.js';
@@ -319,22 +400,58 @@ const STREAM_ANSWER: StreamAnswerFn = streamAnswer;
  *  - `verified` — the strict whole-answer gate in `pipeline.ts`, which has been
  *    sitting unreachable since the answer engine shipped because this route
  *    took only `q` and `thread`.
+ *  - `deep` — Part 7. A plan, then steps against it, then a reflection on what
+ *    is still open, over minutes and many model calls. It is not "web mode with
+ *    more searches": it publishes its work as it goes (`plan`/`step`/`reflect`)
+ *    and it may stop BEFORE retrieving anything to ask what the question means
+ *    (`clarify`). Every other mode either answers or refuses; this one can
+ *    reply with a question, and that is a third outcome the wire had to grow.
  *
  * An unknown value is `web` rather than an error. A mode arrives in a query
  * string, a query string is a link somebody may have kept, and refusing an old
  * link outright is worse than answering it the default way.
  */
-type AnswerMode = 'web' | 'grounded' | 'verified';
-/** What `message.mode` stores. `web` is written `fast`; see `messageMode`. */
-type StoredMode = 'fast' | 'verified' | 'grounded';
+export type AnswerMode = 'web' | 'grounded' | 'verified' | 'deep';
+/** What `message.mode` stores. `web` AND `deep` are written `fast`; see
+ *  `messageMode`, which is where the second of those is argued and regretted. */
+type StoredMode = 'fast' | 'verified' | 'grounded' | 'deep';
 
 export function parseMode(raw: string | null | undefined): AnswerMode {
   const m = (raw ?? '').trim().toLowerCase();
-  return m === 'grounded' || m === 'verified' ? m : 'web';
+  return m === 'grounded' || m === 'verified' || m === 'deep' ? m : 'web';
 }
 
 /**
- * WHAT GOES IN `message.mode`, AND WHY IT STILL CANNOT SAY "GROUNDED".
+ * THE CLARIFY REPLIES, OUT OF THE QUERY STRING.
+ *
+ * Repeated `a=` parameters, in the order of `ClarifyEvent.questions`, because
+ * that event carries no ids and position is therefore the only correspondence
+ * the contract offers.
+ *
+ * A TRAILING blank is dropped and an INTERIOR one is kept, and the asymmetry is
+ * the only interesting line in this function. A trailing blank is a question
+ * the reader never got to; an interior blank is a question they SKIPPED, and
+ * removing it slides every answer after it up onto the wrong question — a
+ * corruption that is invisible to the pipeline, to the reader, and to us,
+ * because the result is a perfectly well-formed set of answers to a different
+ * set of questions.
+ *
+ * The caps are because this is untrusted text arriving in a URL and landing in
+ * a planner prompt with a token bill attached.
+ */
+export const MAX_CLARIFICATIONS = 8;
+const MAX_CLARIFICATION_CHARS = 500;
+
+export function parseClarifications(raw: readonly string[]): string[] {
+  const out = raw
+    .slice(0, MAX_CLARIFICATIONS)
+    .map((v) => v.trim().slice(0, MAX_CLARIFICATION_CHARS));
+  while (out.length > 0 && out[out.length - 1] === '') out.pop();
+  return out;
+}
+
+/**
+ * WHAT GOES IN `message.mode`, AND WHY IT CANNOT SAY "DEEP".
  *
  * The column can. **Migration 016 widened it to `('fast','verified','grounded')`**
  * — verified against the live database — so the schema half of this gap is
@@ -352,12 +469,51 @@ export function parseMode(raw: string | null | undefined): AnswerMode {
  * ORDER, for whoever adds the next mode: widen the reader, ship it, THEN write
  * the value. A schema that admits a mode nothing writes is inert; a writer that
  * emits a mode nothing can read is a corrupted thread.
+ *
+ * ── AND NOW `deep`, WHICH IS THE SAME GAP ONE MODE LATER ───────────────────
+ *
+ * Neither half is widened for it. The CHECK constraint is `('fast','verified',
+ * 'grounded')` (migration 016) and `MODES` in `packages/adapters/src/pg/
+ * thread-store.ts` lists the same three. Migrations and `packages/adapters` are
+ * both outside this task's allow-list, so a deep turn is stored as **`fast`**,
+ * and that is a deliberate mislabelling rather than an oversight.
+ *
+ * WHY `fast` IS THE CLOSEST HONEST VALUE. 016's own column comment defines the
+ * three: fast = per-sentence checks over pages fetched this run; verified = the
+ * whole-answer verbatim gate; grounded = answered from our own evidence with no
+ * search provider reached. A deep run does per-sentence checks over pages
+ * fetched this run — so `fast` is TRUE about the check regime and the
+ * provenance, and merely silent about the plan, the steps and the minutes.
+ * `verified` would claim a gate that never ran. `grounded` would claim we never
+ * reached a search provider, which is the opposite of what deep mode does, and
+ * it would corrupt the one question grounded mode exists to make answerable.
+ *
+ * WHAT THE MISLABELLING COSTS, stated so nobody discovers it in a spreadsheet:
+ * the per-mode cost table is wrong in the expensive direction. A deep run costs
+ * some multiple of a fast one, and every one of them lands in the `fast` row —
+ * so `fast` reads more expensive than it is, `deep` does not appear, and the
+ * §10 ledger comparing the modes silently stops meaning anything the first time
+ * somebody runs a deep question. A test pins this so it stays visible.
+ *
+ * THE FIX, IN ORDER, and the order is not negotiable: (1) widen `MODES` in
+ * `packages/adapters`, ship it; (2) migration 017 widening the CHECK; (3) then
+ * one word here. Writing 'deep' today inserts cleanly and throws on every read,
+ * because `rowToMessage` decodes through `asUnion` and `getThread` is both what
+ * renders a thread and what a follow-up reads its context from. One unreadable
+ * thread is strictly worse than one mislabelled row.
  */
 function messageMode(mode: AnswerMode): StoredMode {
-  // The two vocabularies differ by one word and always have: the route calls it
+  // The vocabularies differ by one word and always have: the route calls it
   // `web` because that is where it looked, the column calls it `fast` because
   // that is how it answered. Mapping here rather than renaming either keeps a
   // URL somebody kept working and a column 015 already constrained.
+  //
+  // `deep` stores as itself since 017. It stored as `fast` until then, which
+  // was the honest choice while the column had no word for it — but a deep
+  // run's ceiling is ~70x a fast answer's, so one of them landing in the `fast`
+  // row made that row read more expensive than every real fast answer combined.
+  // A per-mode cost table that is WRONG is worse than one with a gap, because
+  // nobody distrusts it.
   return mode === 'web' ? 'fast' : mode;
 }
 
@@ -733,6 +889,92 @@ export function verifiedRunner(run: ResearchFn): StreamAnswerFn {
 
 const VERIFIED_ANSWER: StreamAnswerFn = verifiedRunner(research);
 
+/* ── deep research: the seam ────────────────────────────────────────────── */
+
+/**
+ * WHAT A DEEP RUN NEEDS THAT THE OTHER THREE DO NOT.
+ *
+ * A separate shape rather than four more fields on `StreamAnswerDeps`, and the
+ * argument is the one this file already makes about `history` and
+ * `GroundedAnswerDeps`: **the shape is the enforcement.** A web run that could
+ * emit `clarify` would eventually emit one, and a reader looking at a 20-second
+ * answer that stopped to ask a question has been shown a deep run's behaviour
+ * wearing fast mode's badge. There is no callback for it in what web mode is
+ * declared to receive.
+ *
+ * (It still RECEIVES them at runtime — the route composes one deps object per
+ * request and hands the same object to whichever runner the mode selected, so
+ * `DeepAnswerDeps` is a subtype and every runner is assignable. That is exactly
+ * the arrangement `streamAnswer` has had with `history` since Part 5, and the
+ * declared shape is what a pipeline is written against.)
+ *
+ * The four relays are `events.ts`'s payloads, unwrapped and unrenamed. Nothing
+ * here composes a `PlanEvent` or edits one in flight.
+ */
+export interface DeepRelays {
+  /**
+   * The reader's answers to a previous run's `ClarifyEvent`, in ITS order.
+   *
+   * Empty on a first ask, and empty on a run that was never asked to clarify.
+   * A blank entry is a question the reader skipped, and it holds its place —
+   * see `parseClarifications`.
+   *
+   * THEY ARE NOT EVIDENCE, AND THERE IS NOWHERE FOR THEM TO BECOME EVIDENCE.
+   * A clarification is reader-authored text that arrived in a URL. It may shape
+   * the plan, which is its whole purpose; it may never be quoted, cited, or
+   * treated as a fact about the world. `CitableSpan` is built from documents
+   * this run fetched and from our own proven rows, and a string typed into a
+   * text box is neither, so there is no path from here to a citation short of
+   * somebody building one on purpose.
+   */
+  readonly clarifications: readonly string[];
+  readonly onPlan: (e: PlanEvent) => void;
+  readonly onStep: (e: StepEvent) => void;
+  readonly onReflect: (e: ReflectEvent) => void;
+  /**
+   * Asked BEFORE any retrieval, after which the pipeline STOPS and the stream
+   * ends. `events.ts` explains why the ordering is a finding rather than a
+   * preference: retrieved context reads as confidence and makes a model less
+   * likely to ask, so ambiguity is settled before the first search or it is
+   * never settled at all.
+   */
+  readonly onClarify: (e: ClarifyEvent) => void;
+}
+
+export type DeepAnswerDeps = StreamAnswerDeps & DeepRelays;
+
+export type DeepAnswerFn = (
+  question: string,
+  deps: DeepAnswerDeps,
+) => Promise<StreamAnswerResult>;
+
+/**
+ * ▲ THE SEAM ▲ — closed 2026-08-31, once `deep.ts` reached the barrel.
+ *
+ * `DeepAnswerFn` stays a named local type rather than collapsing into a direct
+ * call, for the reason `StreamAnswerFn` and `GroundedAnswerFn` do: it is the
+ * declaration of what this route needs from the pipeline, every payload on it
+ * comes from `events.ts` rather than from `deep.ts`, and it is what let this
+ * file be written and fully tested against fakes while `streamDeep` was being
+ * built in parallel. The deps composed here are a SUPERSET of `DeepDeps` —
+ * `history` and `onUnused` are read nowhere in the pipeline — which is what
+ * reduced the wiring to one line when it landed.
+ *
+ * What stood here is worth remembering, and it is the same note both earlier
+ * seams carry: a REJECTING stub, chosen over one that returned plausible prose,
+ * because an answer engine whose unbuilt-feature failure mode is a fluent
+ * uncited essay is the exact thing `packages/research` exists to prevent — and
+ * it would have passed every test in `answer-route.test.ts`.
+ *
+ * NO `budget` IS PASSED, so the run takes `DEFAULT_DEEP_BUDGET`: 5 steps, 10c,
+ * four minutes, 40 spans. That is deliberate rather than an omission — those
+ * numbers are argued where the loop that obeys them lives, and a second set
+ * chosen here would be the console quietly overriding the pipeline's own cap
+ * with a number nothing in this file could justify. It is read below, at the
+ * admission check, and never written.
+ */
+export const DEEP_ANSWER: DeepAnswerFn = (question, deps) => streamDeep(question, deps);
+
 /* ── the concurrency guard ──────────────────────────────────────────────── */
 
 /**
@@ -762,8 +1004,37 @@ const VERIFIED_ANSWER: StreamAnswerFn = verifiedRunner(research);
  * A queue would be worse, for `runner.ts`'s reason: somebody asked a question
  * and a run that starts several minutes later against a stale page is not what
  * they asked for.
+ *
+ * ── AND WHY A DEEP RUN GETS A CEILING OF ITS OWN ───────────────────────────
+ *
+ * The paragraph above reasons about two answers at once and concludes that the
+ * remaining cost of concurrency is money, bounded by a per-run pre-flight. That
+ * reasoning was written for a run measured in seconds and it does NOT transfer.
+ *
+ * The pre-flight is the only budget gate this route has, it fires ONCE at
+ * admission, and `noteCost` does not move the day's ledger until a run FINISHES.
+ * For a 30-second answer that window is 30 seconds wide and two runs drifting
+ * past a shared ceiling is a rounding error. For a run that spends continuously
+ * for two to four minutes, two of them admitted a minute apart both pass a
+ * pre-flight against a day that neither has yet reported to, and each is worth
+ * some multiple of the answer the ceiling was sized for. The cap is on RUNS and
+ * the ceiling is on MONEY, and deep mode is where those two stop being
+ * proportional.
+ *
+ * So: one deep run at a time, and it still counts against the total of two, so
+ * a deep run and a fast one may overlap. This does not make mid-run spend
+ * bounded — nothing in this file does, and `runAnswer` says what actually is —
+ * it makes the admission check meaningful again, by ensuring the day's ledger
+ * is never consulted while a second minutes-long bill is already accruing
+ * against it unrecorded.
  */
 const MAX_CONCURRENT_ANSWERS = 2;
+const MAX_CONCURRENT_DEEP = 1;
+
+/** What a slot is being claimed for. Only the cost profile differs, and that is
+ *  the entire reason the guard has to know. Not exported: a caller names the
+ *  kind with a literal, and knip is right that a type nobody imports is noise. */
+type RunKind = 'fast' | 'deep';
 
 export class AnswerBusy extends Error {
   constructor(message: string) {
@@ -772,23 +1043,50 @@ export class AnswerBusy extends Error {
   }
 }
 
-/** Whitespace and case are not the question. A reload is the same run. */
-export function answerKey(threadId: string | null, question: string): string {
-  if (threadId !== null && threadId !== '') return `thread:${threadId}`;
-  return `q:${question.replace(/\s+/g, ' ').trim().toLowerCase()}`;
+/**
+ * Whitespace and case are not the question. A reload is the same run.
+ *
+ * A CLARIFY REPLY IS NOT A DUPLICATE, and this is the one case where the
+ * question alone lies. A deep run that stops to ask ends its stream; the reader
+ * answers; the reply arrives carrying the SAME question, because it is the same
+ * question — that is the whole point of the round trip. Keyed on the question
+ * alone it reads as a reload of the run that just asked, and the guard refuses
+ * the answer to its own question. Found on the first live deep run, where an
+ * immediate reply was rejected and an ~8-second pause was the workaround.
+ *
+ * So a reply keys on the replies too. Two readers answering the same clarify
+ * differently are genuinely two runs; the same reader double-clicking Send is
+ * still one, and still refused.
+ */
+export function answerKey(
+  threadId: string | null,
+  question: string,
+  clarifications: readonly string[] = [],
+): string {
+  const answered = clarifications.length > 0 ? `#${clarifications.join('\u0000')}` : '';
+  if (threadId !== null && threadId !== '') return `thread:${threadId}${answered}`;
+  return `q:${question.replace(/\s+/g, ' ').trim().toLowerCase()}${answered}`;
 }
 
 export class AnswerGuard {
   private readonly inFlight = new Set<string>();
+  private readonly deepInFlight = new Set<string>();
 
-  constructor(private readonly maxConcurrent: number = MAX_CONCURRENT_ANSWERS) {}
+  constructor(
+    private readonly maxConcurrent: number = MAX_CONCURRENT_ANSWERS,
+    private readonly maxDeep: number = MAX_CONCURRENT_DEEP,
+  ) {}
 
   size(): number {
     return this.inFlight.size;
   }
 
+  deepSize(): number {
+    return this.deepInFlight.size;
+  }
+
   /** Claims a slot, returning the release. Throws `AnswerBusy` if refused. */
-  begin(key: string): () => void {
+  begin(key: string, kind: RunKind = 'fast'): () => void {
     if (this.inFlight.has(key)) {
       throw new AnswerBusy(
         'that question is already being answered — watching it is free, asking again is not. ' +
@@ -801,7 +1099,17 @@ export class AnswerGuard {
           'Wait for one to finish.',
       );
     }
+    // Checked after the total, so the message a reader gets names the ceiling
+    // that actually stopped them.
+    if (kind === 'deep' && this.deepInFlight.size >= this.maxDeep) {
+      throw new AnswerBusy(
+        'a deep research run is already going. It spends continuously for minutes and the day\u2019s ' +
+          'budget is only checked when a run starts, so a second one would be admitted against a ' +
+          'ledger the first has not reported to yet. Wait for it, or ask this one in web mode.',
+      );
+    }
     this.inFlight.add(key);
+    if (kind === 'deep') this.deepInFlight.add(key);
     let released = false;
     return () => {
       // Idempotent: the release runs in a `finally` that also runs on the error
@@ -809,6 +1117,7 @@ export class AnswerGuard {
       if (released) return;
       released = true;
       this.inFlight.delete(key);
+      this.deepInFlight.delete(key);
     };
   }
 }
@@ -1007,6 +1316,67 @@ function bodyFor(result: StreamAnswerResult): string {
 }
 
 /**
+ * THE ASSISTANT TURN FOR A RUN THAT ASKED INSTEAD OF ANSWERING.
+ *
+ * Written rather than left empty because the alternative — a thread holding a
+ * question and nothing else — is byte-for-byte what a crashed run leaves, and
+ * `historyFor` deliberately drops such a question rather than report it
+ * answered with silence. Two different events must not arrive wearing one
+ * shape. The header argues the rest of it.
+ *
+ * `bodyFor` must not be reached for this case: it would fall through to "the
+ * documents this run read carried nothing quotable", and a run that stopped
+ * BEFORE retrieving read no documents. That sentence would be false in the
+ * particular way this system spends its whole design budget avoiding — a
+ * fluent, confident account of something that did not happen.
+ *
+ * THE QUESTIONS ARE NUMBERED, AND A BLANK ONE STILL TAKES ITS NUMBER. The
+ * replies ride back positionally against `ClarifyEvent.questions`, so the
+ * number a reader sees here has to be the position they are answering in, even
+ * when the pipeline emitted an empty string into the middle of its own list.
+ * Renumbering to tidy the display would misaddress every later answer.
+ */
+export function clarifyBody(e: ClarifyEvent): string {
+  const because = e.because.trim();
+  const questions = e.questions.map((q) => q.trim());
+
+  if (!questions.some((q) => q !== '')) {
+    return because === ''
+      ? 'This run stopped before searching, because the question was too broad to spend minutes on.'
+      : `This run stopped before searching, because ${because}`;
+  }
+
+  const head =
+    because === ''
+      ? 'Before spending minutes on this, the run stopped to ask:'
+      : `Before spending minutes on this, the run stopped to ask, because ${because}:`;
+  return [head, ...questions.map((q, i) => `${i + 1}. ${q}`)].join('\n');
+}
+
+/**
+ * The user turn, when the reader is answering a clarify rather than asking
+ * cold.
+ *
+ * One exchange arrives as two HTTP requests, and the thread should read as one
+ * exchange. Nothing is invented: the reader typed the question in the first
+ * request and the replies in the second, and this puts them in one row under
+ * the numbers they were asked against. A skipped question is written as skipped
+ * rather than closed up, for `parseClarifications`'s reason — the numbers are
+ * the addressing.
+ *
+ * The QUESTION handed to the pipeline is untouched by this. What is composed
+ * here is the record; the replies reach the pipeline as `clarifications`, a
+ * field of their own, because a clarification folded into the question would
+ * become a phrase the writer sees and the run's question would stop being the
+ * one the reader typed.
+ */
+export function userBodyFor(question: string, clarifications: readonly string[]): string {
+  if (!clarifications.some((c) => c.trim() !== '')) return question;
+  const lines = clarifications.map((c, i) => `${i + 1}. ${c.trim() === '' ? '(not answered)' : c.trim()}`);
+  return [question, '', 'Clarifications:', ...lines].join('\n');
+}
+
+/**
  * What goes in `message.answer`.
  *
  * `points` and `dropped` stay EMPTY, and that is not a gap being papered over:
@@ -1050,6 +1420,12 @@ interface AnswerParams {
   readonly threadId: string | null;
   /** Absent is `web`, which is what every request sent before 2026-08-31. */
   readonly mode?: AnswerMode;
+  /**
+   * Answers to a previous run's `ClarifyEvent`, in its order. Absent on every
+   * request that is not the second half of a clarify round trip, which is
+   * almost all of them.
+   */
+  readonly clarifications?: readonly string[];
 }
 
 export interface AnswerDeps {
@@ -1067,20 +1443,42 @@ export interface AnswerDeps {
    */
   readonly groundedAnswer?: StreamAnswerFn;
   readonly verifiedAnswer?: StreamAnswerFn;
+  /**
+   * Deep research. Typed as `DeepAnswerFn` because it is the only runner that
+   * is promised the four extra channels; the other three are assignable to it
+   * since `DeepAnswerDeps` is a subtype of what they take.
+   */
+  readonly deepAnswer?: DeepAnswerFn;
   readonly ports: AnswerPorts;
   /** Joins every `ai_usage_log` row this run writes to the message it paid for. */
   readonly runId: string;
   readonly now: () => Date;
   readonly newId: () => string;
-  /** The day's ledger, or the reason it refuses. Null means go. */
-  readonly checkBudget: () => string | null;
+  /**
+   * The day's ledger, or the reason it refuses. Null means go.
+   *
+   * TAKES THE MODE, because one estimate for four modes was fine while three of
+   * them cost roughly the same and stopped costing anything after 30 seconds.
+   * See `estimatedCostCentsFor`.
+   */
+  readonly checkBudget: (mode: AnswerMode) => string | null;
   readonly noteCost: (costCents: number) => void;
 }
 
-/** The runner this mode needs, or null when the caller did not supply one. */
-function runnerFor(mode: AnswerMode, deps: AnswerDeps): StreamAnswerFn | null {
+/**
+ * The runner this mode needs, or null when the caller did not supply one.
+ *
+ * Returns `DeepAnswerFn` for all four: the route composes ONE deps object per
+ * request and hands it to whichever runner won, so the type has to be the one
+ * that describes the widest deps. A `StreamAnswerFn` is assignable to it — a
+ * function that accepts the narrower shape accepts the wider one — which is
+ * what lets web, grounded and verified stay declared without the four channels
+ * they must never use.
+ */
+function runnerFor(mode: AnswerMode, deps: AnswerDeps): DeepAnswerFn | null {
   if (mode === 'grounded') return deps.groundedAnswer ?? null;
   if (mode === 'verified') return deps.verifiedAnswer ?? null;
+  if (mode === 'deep') return deps.deepAnswer ?? null;
   return deps.streamAnswer;
 }
 
@@ -1122,15 +1520,20 @@ export async function runAnswerStream(
     return;
   }
 
-  const refusal = deps.checkBudget();
+  const refusal = deps.checkBudget(mode);
   if (refusal !== null) {
     send(sink, 'error_msg', `Refused by the daily budget: ${refusal}`);
     return;
   }
 
+  const clarifications = params.clarifications ?? [];
+
   let release: () => void;
   try {
-    release = deps.guard.begin(answerKey(params.threadId, question));
+    release = deps.guard.begin(
+      answerKey(params.threadId, question, params.clarifications ?? []),
+      mode === 'deep' ? 'deep' : 'fast',
+    );
   } catch (err) {
     if (err instanceof AnswerBusy) {
       send(sink, 'error_msg', err.message);
@@ -1145,6 +1548,11 @@ export async function runAnswerStream(
   const sources: SourceEvent[] = [];
   const spans: SpanEvent[] = [];
   let flagged = 0;
+  // Recorded as well as relayed, because this one decides what is PERSISTED.
+  // Taken from the wire rather than from the runner's return value on purpose:
+  // what the reader was shown and what the thread stores are then the same
+  // object, and they cannot come to disagree the way a second field would.
+  let clarify: ClarifyEvent | null = null;
 
   const relay = {
     onStatus: (e: StatusEvent) => send(sink, 'status', e),
@@ -1164,6 +1572,18 @@ export async function runAnswerStream(
     // Straight to the wire and nowhere else: `message.answer` has no field
     // these belong in, so this frame is live-only and the header says so.
     onUnused: (e: UnusedEvent) => send(sink, 'unused', e),
+    // The four deep-mode frames, relayed under the names `DEEP_EVENTS` lists
+    // and carrying `events.ts`'s payloads unchanged. No mode but deep calls
+    // them; see `DeepRelays` for why the other runners are not even told they
+    // exist.
+    clarifications,
+    onPlan: (e: PlanEvent) => send(sink, 'plan', e),
+    onStep: (e: StepEvent) => send(sink, 'step', e),
+    onReflect: (e: ReflectEvent) => send(sink, 'reflect', e),
+    onClarify: (e: ClarifyEvent) => {
+      clarify = e;
+      send(sink, 'clarify', e);
+    },
   };
 
   try {
@@ -1200,7 +1620,10 @@ export async function runAnswerStream(
       id: deps.newId(),
       threadId,
       role: 'user',
-      body: question,
+      // The replies to a previous clarify go in the RECORD beside the question
+      // they answer, so one exchange spread over two requests reads back as
+      // one. The pipeline gets them as `clarifications`, not as question text.
+      body: userBodyFor(question, clarifications),
       createdAt: deps.now().toISOString(),
     });
 
@@ -1217,7 +1640,11 @@ export async function runAnswerStream(
       // outcome — an empty citable universe produces no prose. The pipeline's
       // own note says WHY it is empty, so it is preferred over a generic line;
       // naming it either way beats aborting the turn and losing the question.
-      body: bodyFor(result),
+      //
+      // A run that stopped to ask stores the questions instead, and only when
+      // it wrote no prose: a pipeline that asked and then answered anyway is
+      // recorded by what it answered, because that is what the reader read.
+      body: clarify !== null && result.text.trim() === '' ? clarifyBody(clarify) : bodyFor(result),
       mode: messageMode(mode),
       runId: deps.runId,
       costCents: result.costCents,
@@ -1266,6 +1693,53 @@ const GUARD = new AnswerGuard();
  */
 const ESTIMATED_ANSWER_COST_CENTS = 5;
 
+/**
+ * WHAT THE DAY MUST HAVE ROOM FOR BEFORE A RUN IS ADMITTED.
+ *
+ * For web, grounded and verified this stays the small generous guess above: the
+ * pre-flight exists to refuse a run on a day that is ALREADY spent, not to
+ * predict a bill, and those three finish in seconds.
+ *
+ * A DEEP RUN CANNOT USE THAT NUMBER, and using it would be the quiet failure
+ * this whole file is written against. A day with 5c of headroom would admit a
+ * run worth some multiple of that, spend it over four minutes, and report the
+ * overrun afterwards — the ceiling would have been consulted and then exceeded,
+ * which is worse than not having one, because the log says it was checked.
+ *
+ * So deep mode is admitted against THE LARGEST BILL THE TOKEN CEILING CAN
+ * PRODUCE, not against a guess:
+ *
+ *   - `callGroq` bounds a run at `maxRunTokens` per budget state;
+ *   - `createAsk` and `createAskStream` hold one state EACH (see `ask.ts`), and
+ *     `runAnswer` builds one of each per request, so a request can reach
+ *     2 x maxRunTokens before the chokepoint stops it;
+ *   - priced entirely at the strong model's OUTPUT rate, which no run achieves
+ *     — prompt tokens are 4x cheaper — so this over-estimates on purpose.
+ *     Over-estimating costs us a run we could have afforded; under-estimating
+ *     costs money, and only one of those is recoverable.
+ *
+ * At the shipped defaults (100k tokens, gpt-oss-120b at 60c/Mtok out) that is
+ * 12c, against roughly 0.17c for a fast answer. `estimateCostCents` is imported
+ * rather than reproduced: a price written down twice is a price that is wrong
+ * in one of the two places, and `groq.ts`'s table already had that bug once at
+ * a factor of ten.
+ *
+ * AND THE LARGER OF THAT AND THE PIPELINE'S OWN CAP. `deep.ts` declares
+ * `DEFAULT_DEEP_BUDGET.maxCostCents` — the line past which the loop stops
+ * itself — and taking the max means the day is never asked to admit a run for
+ * less than the run has already said it may spend. Read rather than restated,
+ * so raising the pipeline's cap raises what the door demands, in the same
+ * commit, without anybody remembering to.
+ *
+ * THIS IS AN ADMISSION CHECK AND NOTHING MORE. It does not bound what the run
+ * spends once it is running. `runAnswer` says what does.
+ */
+export function estimatedCostCentsFor(mode: AnswerMode, limits: BudgetLimits): number {
+  if (mode !== 'deep') return ESTIMATED_ANSWER_COST_CENTS;
+  const tokenCeiling = Math.ceil(estimateCostCents(MODELS.strong, 0, 2 * limits.maxRunTokens));
+  return Math.max(DEFAULT_DEEP_BUDGET.maxCostCents, tokenCeiling);
+}
+
 const PG_STORE: AnswerStore = { createThread, getThread, appendMessage };
 
 /**
@@ -1277,6 +1751,7 @@ export async function runAnswer(
   question: string,
   threadId: string | null,
   mode: AnswerMode = 'web',
+  clarifications: readonly string[] = [],
 ): Promise<void> {
   openSse(res);
 
@@ -1316,9 +1791,62 @@ export async function runAnswer(
 
   const budget = await dailyBudget();
 
+  /*
+   * WHAT ACTUALLY BOUNDS A MINUTES-LONG RUN, once it is past the door.
+   *
+   * Written here because this is where the ports are built, and stated in full
+   * because a deep mode shipped on the assumption that the fast-mode guards
+   * transfer is a bill nobody sees coming. Three ceilings apply, in two places,
+   * and NONE of them is the `AnswerGuard` or the pre-flight above:
+   *
+   *  - BOUNDED, by the pipeline. `DEFAULT_DEEP_BUDGET` — 5 steps, 10c of model
+   *    spend, four minutes of wall clock, 40 spans — checked BEFORE each step,
+   *    never mid-step. So the real overshoot is one step's worth past the cap,
+   *    and `stoppedBecause` says which cap ended the run rather than leaving it
+   *    to look like the plan was finished.
+   *  - BOUNDED, at the chokepoint. Groq tokens. Each port holds one
+   *    `BudgetState` for the whole request (one `runId`), so `maxRunTokens`
+   *    accumulates across every model call the run makes. This is the outer
+   *    bound and it does not depend on the pipeline being correct — which is
+   *    why the admission estimate is derived from it. Note the shape of that
+   *    ending, though: a run stopped by the token ceiling returns `null` from
+   *    `ask`, which is indistinguishable from a run whose model went away.
+   *  - BOUNDED, but not in cents. Search-provider calls: `maxSteps` x
+   *    `DEFAULT_DEEP_LIMITS.maxQueries` is roughly ten searches, against a fast
+   *    answer's four. Tavily and Exa are billed per call and pass through no
+   *    ceiling in this repo at all, so this spend is bounded in COUNT and
+   *    invisible to `TMOS_MAX_DAILY_COST_CENTS`. §6 of the plan notes that a
+   *    flat per-request search fee often dominates token cost; deep mode is
+   *    where that stops being a note.
+   *
+   * NOT BOUNDED: the day's dollar ledger between admission and completion.
+   * `noteCost` runs once, at the end, so a four-minute run is invisible to the
+   * next admission check for four minutes. `MAX_CONCURRENT_DEEP` is the whole
+   * mitigation and it is a small one.
+   *
+   * Two fixes were considered and rejected rather than forgotten. Charging the
+   * estimate to the day at admission and the actual at the end double-counts
+   * permanently, and the in-memory ledger would then disagree with
+   * `ai_usage_log`, which is the table the ceiling is rebuilt from on boot — a
+   * fix that makes tomorrow's ceiling wrong. And a deadline enforced by
+   * throwing out of a relay callback would stop a run only if the pipeline let
+   * a callback throw propagate; a ceiling that might not be a ceiling is worse
+   * than a documented gap. Both want a shared `BudgetState` at the chokepoint —
+   * a serial change to `AskConfig`, which `budget-boot.ts` has named since
+   * Part 2 and which is still the one fix that would make the day real.
+   */
+
   await runAnswerStream(
     res,
-    { question, threadId, mode },
+    {
+      question,
+      threadId,
+      mode,
+      // A clarification answers a question only deep mode asks. Carrying one
+      // into a mode that never asked would put lines in the stored turn that
+      // nothing requested, and hand a planner text it has no use for.
+      clarifications: mode === 'deep' ? clarifications : [],
+    },
     {
       store: PG_STORE,
       guard: GUARD,
@@ -1333,6 +1861,11 @@ export async function runAnswer(
         RESOLVE_FOLLOW_UP,
       ),
       verifiedAnswer: VERIFIED_ANSWER,
+      // Rejects until `packages/research/src/deep.ts` lands. Wired anyway, so
+      // that the swap is one identifier and so that `?mode=deep` fails by
+      // saying the feature does not exist — not by quietly answering a
+      // minutes-of-research question with a 20-second web pass.
+      deepAnswer: DEEP_ANSWER,
       ports: {
         ask: createAsk(askConfig),
         askStream: createAskStream(askConfig),
@@ -1342,7 +1875,8 @@ export async function runAnswer(
       runId,
       now: () => new Date(),
       newId: randomUUID,
-      checkBudget: () => refuseForBudget(budget, limits, ESTIMATED_ANSWER_COST_CENTS, new Date()),
+      checkBudget: (asked) =>
+        refuseForBudget(budget, limits, estimatedCostCentsFor(asked, limits), new Date()),
       noteCost: (costCents) => noteSpend(budget, runId, costCents, new Date()),
     },
   );

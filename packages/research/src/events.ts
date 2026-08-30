@@ -159,3 +159,90 @@ export interface ConversationTurn {
   /** URLs read for that turn, so a follow-up can reuse rather than re-fetch. */
   readonly sourceUrls: readonly string[];
 }
+
+/* ── deep research ────────────────────────────────────────────────────────── */
+
+/**
+ * A MULTI-MINUTE RUN NEEDS A DIFFERENT WIRE, AND THE REASON IS NOT COSMETIC.
+ *
+ * A fast answer's staging works because the whole thing is over in 30 seconds:
+ * a status line, sources, then prose. Two to four minutes of that same status
+ * line is indistinguishable from a hang, and the honest fix is not a nicer
+ * spinner — it is showing the work. So a deep run publishes its PLAN, then
+ * reports each step against it, then what each step actually found.
+ *
+ * The reader has to be able to abandon a run that is going wrong at minute one
+ * rather than discovering it at minute four, and that is only possible if the
+ * plan is visible before the searching starts.
+ */
+
+/** One sub-question the run intends to answer. Published before any retrieval. */
+export interface PlanStep {
+  /** 1-based. Stable for the run — a replan revises `question`, never `n`. */
+  readonly n: number;
+  readonly question: string;
+  /** Why this step earns a slot. A step nobody can justify is a step to cut. */
+  readonly why: string;
+}
+
+/** The whole plan, emitted once before step one and again after any revision. */
+export interface PlanEvent {
+  readonly steps: readonly PlanStep[];
+  /** Set when this replaces an earlier plan, saying what changed and why. */
+  readonly revisedBecause?: string;
+}
+
+/**
+ * Progress on one step.
+ *
+ * `found` is the count of NEW proven spans this step added — not documents read
+ * and not results returned. A step that read nine pages and proved nothing is
+ * the single most useful thing a watching reader can be told, and a "9 sources"
+ * counter would hide exactly that.
+ */
+export interface StepEvent {
+  readonly n: number;
+  readonly state: 'running' | 'done' | 'skipped';
+  readonly detail?: string;
+  readonly found?: number;
+}
+
+/**
+ * The reflection between steps — what is still open, and whether to continue.
+ *
+ * Published because it is the run's own reasoning about its own progress, and a
+ * reader deciding whether to let it keep spending deserves to see it. `stop`
+ * carries the reason: "the plan is answered" and "the budget cap ended it" are
+ * different outcomes and an answer that cannot tell you which is a worse answer.
+ */
+export interface ReflectEvent {
+  readonly after: number;
+  readonly stillOpen: readonly string[];
+  readonly note: string;
+  readonly stop?: string;
+}
+
+/**
+ * Questions asked BEFORE any retrieval, when the request is too broad to spend
+ * minutes on.
+ *
+ * The ordering is a finding, not a preference. "Knowing but Not Showing"
+ * (arXiv:2605.25284) reports that models can judge ambiguity correctly when
+ * asked directly, but default to guessing in normal QA mode — and that handing
+ * the model retrieved context makes it LESS likely to ask, not more, because
+ * context reads as confidence. So ambiguity is decided before the first search,
+ * or in practice it is never decided at all.
+ *
+ * The stream ENDS after this event. Answering is a new request carrying the
+ * replies, which keeps the transport one-directional; SSE has no upstream
+ * channel and inventing one for a question asked at most once per run would be
+ * a lot of machinery for a rare moment.
+ */
+export interface ClarifyEvent {
+  readonly questions: readonly string[];
+  /** Why the run stopped to ask, in the reader's terms. */
+  readonly because: string;
+}
+
+export const DEEP_EVENTS = ['plan', 'step', 'reflect', 'clarify'] as const;
+export type DeepEventName = (typeof DEEP_EVENTS)[number];

@@ -58,7 +58,7 @@ import {
 export type MessageRole = 'user' | 'assistant';
 /** Fast = per-sentence checks; Verified = the whole-answer verbatim gate. */
 /**
- * How an answer was produced. Widened for `grounded` by migration 016.
+ * How an answer was produced. Widened for `grounded` by 016, `deep` by 017.
  *
  * THE ORDER MATTERS AND IT IS NOT THE OBVIOUS ONE. This union is a decode gate:
  * `asUnion` THROWS on a value it does not list, and `getThread` is both what
@@ -71,7 +71,7 @@ export type MessageRole = 'user' | 'assistant';
  * then start writing the new value. A migration that admits a mode the reader
  * refuses is a trap that only springs after the row exists.
  */
-export type AnswerMode = 'fast' | 'verified' | 'grounded';
+export type AnswerMode = 'fast' | 'verified' | 'grounded' | 'deep';
 /**
  * Where a thread's title came from. `user` is a rename and outranks the other
  * two forever — see 015 on why a later auto-titler needs to be able to tell.
@@ -79,7 +79,7 @@ export type AnswerMode = 'fast' | 'verified' | 'grounded';
 export type TitleSource = 'question' | 'user' | 'generated';
 
 const ROLES = ['user', 'assistant'] as const;
-const MODES = ['fast', 'verified', 'grounded'] as const;
+const MODES = ['fast', 'verified', 'grounded', 'deep'] as const;
 const TITLE_SOURCES = ['question', 'user', 'generated'] as const;
 
 /**

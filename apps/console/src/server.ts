@@ -44,7 +44,7 @@ import {
 import { readState } from './queries.js';
 import { runResearch } from './research-route.js';
 import { runDraft } from './draft-route.js';
-import { parseMode, runAnswer } from './answer-route.js';
+import { parseClarifications, parseMode, runAnswer } from './answer-route.js';
 import { primeBudget } from './budget-boot.js';
 import { Runner, RunBusy, isStage } from './runner.js';
 
@@ -329,15 +329,22 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   if (path === '/api/answer') {
     // GET, because EventSource cannot POST. `thread` continues a conversation;
-    // its absence starts one. `mode` chooses web / grounded / verified, and an
-    // unknown value is web rather than an error — a mode rides in a link
+    // its absence starts one. `mode` chooses web / grounded / verified / deep,
+    // and an unknown value is web rather than an error — a mode rides in a link
     // somebody may have kept, and refusing an old link is worse than answering
     // it the default way.
+    //
+    // `a` is repeated, once per clarifying question, IN ORDER. It is the second
+    // half of deep mode's clarify round trip: `ClarifyEvent` ends the stream
+    // because SSE has no upstream channel, so the replies come back as a new
+    // request. `getAll` and not `get` — the order is the addressing, and a
+    // skipped question keeps its slot. See `parseClarifications`.
     return runAnswer(
       res,
       url.searchParams.get('q') ?? '',
       url.searchParams.get('thread'),
       parseMode(url.searchParams.get('mode')),
+      parseClarifications(url.searchParams.getAll('a')),
     );
   }
 

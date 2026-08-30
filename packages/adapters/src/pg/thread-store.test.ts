@@ -452,9 +452,19 @@ describe('decoding what came back', () => {
     expect(() => answerFromColumn({ ...ANSWER, unanswered: 'nope' })).toThrow(DecodeError);
   });
 
-  it('refuses a role or mode outside what 015 permits', () => {
+  it('refuses a role or mode outside what 015 → 017 permit', () => {
     expect(() => rowToMessage(cannedMessage({ role: 'system' }))).toThrow(DecodeError);
-    expect(() => rowToMessage(cannedMessage({ mode: 'deep' }))).toThrow(DecodeError);
+    // All four the column admits decode. `deep` was refused here until 017;
+    // widening this union is deliberately step ONE of adding a mode, because
+    // `getThread` both renders a thread and feeds a follow-up its context — a
+    // value written before the decoder knows it inserts cleanly and then fails
+    // on every read, making its own thread permanently unreadable.
+    for (const mode of ['fast', 'verified', 'grounded', 'deep']) {
+      expect(rowToMessage(cannedMessage({ mode })).mode).toBe(mode);
+    }
+    // Still a gate. The next mode repeats the three steps rather than
+    // inheriting an open door.
+    expect(() => rowToMessage(cannedMessage({ mode: 'deep-research' }))).toThrow(DecodeError);
     // A user turn's null mode is not a decode failure — it is the shape.
     expect(rowToMessage(cannedMessage({ role: 'user', mode: null, answer: null })).mode).toBeNull();
   });

@@ -24,11 +24,17 @@ import { describe, expect, it } from 'vitest';
 import type {
   AskPort,
   AskStreamPort,
+  ClarifyEvent,
+  PlanEvent,
   ReadPort,
+  ReflectEvent,
   SearchPort,
   SourceEvent,
   SpanEvent,
+  StepEvent,
 } from '@tmos/research';
+import { DEEP_EVENTS } from '@tmos/research';
+import type { BudgetLimits } from '@tmos/shared';
 import type {
   CitationRecord,
   MessageRecord,
@@ -44,18 +50,26 @@ import {
   AnswerGuard,
   answerKey,
   citationsFor,
+  clarifyBody,
+  DEEP_ANSWER,
   epilogueFor,
+  estimatedCostCentsFor,
   GROUNDED_ANSWER,
   groundedRunner,
   historyFor,
+  MAX_CLARIFICATIONS,
+  parseClarifications,
   parseMode,
   RESOLVE_FOLLOW_UP,
   runAnswerStream,
   titleFor,
   unusedFor,
+  userBodyFor,
   verifiedRunner,
   type AnswerDeps,
   type AnswerStore,
+  type DeepAnswerDeps,
+  type DeepAnswerFn,
   type EpilogueEvent,
   type GroundedAnswerFn,
   type ResolveFollowUpFn,
@@ -1424,5 +1438,524 @@ describe('historyFor — internal locators are not pages', () => {
     // The follow-up planner hands this list to the reader as pages to re-read.
     // A locator would be fetched, fail, and spend a page of the run's budget.
     expect(turn?.sourceUrls).toEqual(['https://jiffy.ca/pricing']);
+  });
+});
+
+/* ══ PART 7b — DEEP RESEARCH ═══════════════════════════════════════════════
+ *
+ * Five things are worth proving here, and each is a way this mode can go wrong
+ * that no other mode can:
+ *
+ *  1. **The four contract events reach the wire unchanged.** `plan`, `step`,
+ *     `reflect` and `clarify` are `events.ts`'s, not this route's, so the only
+ *     defensible relay is one that renames and reshapes nothing.
+ *  2. **The clarify round trip.** The stream ends when the pipeline asks, so
+ *     the questions have to survive in the thread and the replies have to come
+ *     back positionally without sliding onto the wrong question.
+ *  3. **The budget.** A minutes-long mode admitted on a 30-second mode's
+ *     estimate is a ceiling that gets consulted and then exceeded.
+ *  4. **`message.mode` cannot say 'deep'.** Pinned, so the gap stays visible
+ *     and nobody closes it in the order that corrupts a thread.
+ *  5. **The seam rejects.** Not "returns something plausible".
+ */
+
+const DEEP_LIMITS: BudgetLimits = {
+  maxRunTokens: 100_000,
+  maxDailyCostCents: 2_000,
+  maxToolDepth: 8,
+};
+
+const PLAN: PlanEvent = {
+  steps: [
+    { n: 1, question: 'What does Jiffy charge in Toronto?', why: 'the comparison rests on it' },
+    { n: 2, question: 'What does TaskRabbit charge?', why: 'the other half of the comparison' },
+  ],
+};
+const STEP: StepEvent = { n: 1, state: 'done', detail: 'read 9 pages', found: 2 };
+const REFLECT: ReflectEvent = {
+  after: 1,
+  stillOpen: ['what TaskRabbit charges'],
+  note: 'one side of the comparison is proven',
+  stop: undefined,
+};
+const CLARIFY: ClarifyEvent = {
+  questions: ['Which city?', 'Over what period?'],
+  because: 'the question spans a market and a time window and neither is named',
+};
+
+/** A deep pipeline that shows its work, then answers. No model, no network. */
+const deepStream: DeepAnswerFn = async (q, dep) => {
+  dep.onPlan(PLAN);
+  dep.onStep({ n: 1, state: 'running' });
+  dep.onStep(STEP);
+  dep.onReflect(REFLECT);
+  return happyStream(q, dep);
+};
+
+/** A deep pipeline that stops before retrieving anything to ask what the
+ *  question means — the whole point of a PRE-retrieval gate. */
+const clarifyingStream = (e: ClarifyEvent = CLARIFY): DeepAnswerFn => async (_q, dep) => {
+  dep.onClarify(e);
+  return { text: '', costCents: 0.04 };
+};
+
+describe('parseMode — deep', () => {
+  it('reads deep, case and whitespace insensitive', () => {
+    expect(parseMode('deep')).toBe('deep');
+    expect(parseMode('  DEEP ')).toBe('deep');
+  });
+
+  it('still refuses to guess at a near miss', () => {
+    // `deep-research` was already asserted to fall back to web, and it must
+    // keep doing so: a mode is an exact word, and a near miss silently routed
+    // to a minutes-long paid pipeline is the wrong direction to guess in.
+    expect(parseMode('deep-research')).toBe('web');
+    expect(parseMode('deeper')).toBe('web');
+  });
+});
+
+describe('parseClarifications', () => {
+  it('keeps an interior blank in place — the numbers are the addressing', () => {
+    // THE BUG THIS EXISTS TO PREVENT. `ClarifyEvent` carries no ids, so an
+    // answer is identified by its position. Dropping the skipped second answer
+    // would slide the third onto question 2: a perfectly well-formed set of
+    // answers to a different set of questions, invisible to every layer below.
+    expect(parseClarifications(['Toronto', '', 'last 12 months'])).toEqual([
+      'Toronto',
+      '',
+      'last 12 months',
+    ]);
+  });
+
+  it('drops trailing blanks, which are questions nobody reached', () => {
+    expect(parseClarifications(['Toronto', '', ''])).toEqual(['Toronto']);
+    expect(parseClarifications(['', ''])).toEqual([]);
+    expect(parseClarifications([])).toEqual([]);
+  });
+
+  it('caps the count and the length — this is untrusted text in a URL', () => {
+    expect(parseClarifications(Array.from({ length: 40 }, () => 'x'))).toHaveLength(MAX_CLARIFICATIONS);
+    expect(parseClarifications([' '.repeat(3) + 'y'.repeat(900)])[0]).toHaveLength(500);
+  });
+});
+
+describe('the four deep events reach the wire, unchanged', () => {
+  it('relays plan, step and reflect under the contract’s own names', async () => {
+    const { frames, sink } = recorder();
+    await runAnswerStream(sink, { ...ASK, mode: 'deep' }, deps({ deepAnswer: deepStream }));
+
+    const names = frames.map((f) => f.event);
+    expect(names).toContain('plan');
+    expect(names).toContain('step');
+    expect(names).toContain('reflect');
+    // Every deep frame name is one `events.ts` declares. If the contract grows
+    // a fifth event or renames one, this is what notices.
+    const deepFrames = frames.filter((f) => (DEEP_EVENTS as readonly string[]).includes(f.event));
+    expect(deepFrames.map((f) => f.event)).toEqual(['plan', 'step', 'step', 'reflect']);
+  });
+
+  it('sends the payloads verbatim — the route composes nothing', async () => {
+    const { frames, sink } = recorder();
+    await runAnswerStream(sink, { ...ASK, mode: 'deep' }, deps({ deepAnswer: deepStream }));
+
+    // Deep equality against the objects the pipeline emitted. A route that
+    // helpfully added a field would be a second contract, held by one of the
+    // three pieces that were written against one.
+    expect(frames.find((f) => f.event === 'plan')?.data).toEqual(PLAN);
+    expect(frames.filter((f) => f.event === 'step').at(-1)?.data).toEqual(STEP);
+    // `stop: undefined` does not survive JSON, and that is the contract's own
+    // encoding: absent means the run did not stop.
+    expect(frames.find((f) => f.event === 'reflect')?.data).toEqual({
+      after: 1,
+      stillOpen: ['what TaskRabbit charges'],
+      note: 'one side of the comparison is proven',
+    });
+  });
+
+  it('publishes the plan before the first step, which is the whole point', async () => {
+    const { frames, sink } = recorder();
+    await runAnswerStream(sink, { ...ASK, mode: 'deep' }, deps({ deepAnswer: deepStream }));
+    const names = frames.map((f) => f.event);
+    // A reader has to be able to abandon a run that is going wrong at minute
+    // one rather than discovering it at minute four.
+    expect(names.indexOf('plan')).toBeLessThan(names.indexOf('step'));
+    expect(names.indexOf('step')).toBeLessThan(names.indexOf('reflect'));
+  });
+
+  it('never emits one on a web run', async () => {
+    const { frames, sink } = recorder();
+    await runAnswerStream(sink, ASK, deps());
+    for (const name of DEEP_EVENTS) expect(frames.some((f) => f.event === name)).toBe(false);
+  });
+});
+
+describe('the clarify round trip — the run that asks instead of answering', () => {
+  it('puts the questions on the wire and still ends with done', async () => {
+    const { frames, sink } = recorder();
+    const d = deps({ deepAnswer: clarifyingStream() });
+    await runAnswerStream(sink, { ...ASK, mode: 'deep' }, d);
+
+    expect(frames.find((f) => f.event === 'clarify')?.data).toEqual(CLARIFY);
+    // `done` is not decoration here: it carries the threadId, and the replies
+    // arrive as a NEW request that has to name the thread it is answering in.
+    // A stream that just stopped would strand the round trip at step one.
+    const done = frames.at(-1);
+    expect(done?.event).toBe('done');
+    expect((done?.data as { threadId: string }).threadId).toBe(d.store.threads[0]?.id);
+  });
+
+  it('persists the questions as the assistant turn, numbered as they were asked', async () => {
+    const d = deps({ deepAnswer: clarifyingStream() });
+    await runAnswerStream(recorder().sink, { ...ASK, mode: 'deep' }, d);
+
+    const body = d.store.messages[1]?.body ?? '';
+    expect(body).toContain('1. Which city?');
+    expect(body).toContain('2. Over what period?');
+    expect(body).toContain('spans a market and a time window');
+    // NOT the generic empty-answer line. That sentence says documents were read
+    // and carried nothing; this run stopped before reading anything, and a
+    // confident account of something that did not happen is the exact failure
+    // this system is organised against.
+    expect(body).not.toContain('nothing quotable');
+  });
+
+  it('leaves a readable turn rather than a thread that looks like a crash', async () => {
+    const d = deps({ deepAnswer: clarifyingStream() });
+    await runAnswerStream(recorder().sink, { ...ASK, mode: 'deep' }, d);
+
+    // A question with no assistant turn is what a died-halfway run leaves, and
+    // `historyFor` drops it rather than report it answered with silence. An
+    // abandoned clarify must not arrive wearing that shape.
+    expect(d.store.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    const turns = historyFor((await d.store.getThread(d.store.threads[0]?.id ?? ''))!);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.answer).toContain('Which city?');
+    // Nothing was retrieved, so nothing is cited and nothing is claimed.
+    expect(d.store.messages[1]?.citations ?? []).toEqual([]);
+  });
+
+  it('numbers a blank question rather than closing the gap', () => {
+    const body = clarifyBody({ questions: ['Which city?', '', 'Over what period?'], because: '' });
+    // The reader answers positionally. Renumbering to tidy the display would
+    // misaddress every answer after the gap.
+    expect(body).toContain('1. Which city?');
+    expect(body).toContain('3. Over what period?');
+  });
+
+  it('says what happened when the pipeline asked with no questions in hand', () => {
+    const body = clarifyBody({ questions: [], because: 'the question names no market' });
+    expect(body).toContain('the question names no market');
+    expect(body).not.toContain('1.');
+  });
+
+  it('records the prose when a pipeline asked and then answered anyway', async () => {
+    const both: DeepAnswerFn = async (q, dep) => {
+      dep.onClarify(CLARIFY);
+      return happyStream(q, dep);
+    };
+    const d = deps({ deepAnswer: both });
+    await runAnswerStream(recorder().sink, { ...ASK, mode: 'deep' }, d);
+    // The contract says the stream ends after a clarify. If one does not, the
+    // reader read an answer, and the thread must store what the reader read.
+    expect(d.store.messages[1]?.body).toContain('The market grew 12%');
+  });
+});
+
+describe('the clarify round trip — the replies coming back', () => {
+  const REPLIES = ['Toronto', '', 'the last 12 months'];
+
+  it('hands the replies to the pipeline as answers, never as the question', async () => {
+    const seen: { question: string; clarifications: readonly string[] }[] = [];
+    const spy: DeepAnswerFn = async (question, dep) => {
+      seen.push({ question, clarifications: dep.clarifications });
+      return happyStream(question, dep);
+    };
+    await runAnswerStream(
+      recorder().sink,
+      { ...ASK, mode: 'deep', clarifications: REPLIES },
+      deps({ deepAnswer: spy }),
+    );
+
+    expect(seen[0]?.clarifications).toEqual(REPLIES);
+    // The question the run answers stays the question the reader typed. Folded
+    // in, "Toronto" becomes a phrase the writer sees and the run is answering
+    // something nobody asked.
+    expect(seen[0]?.question).toBe(ASK.question);
+    expect(seen[0]?.question).not.toContain('Toronto');
+  });
+
+  it('stores one exchange, though it arrived as two requests', async () => {
+    const d = deps({ deepAnswer: deepStream });
+    await runAnswerStream(
+      recorder().sink,
+      { ...ASK, mode: 'deep', clarifications: REPLIES },
+      d,
+    );
+
+    const body = d.store.messages[0]?.body ?? '';
+    expect(body).toContain(ASK.question);
+    expect(body).toContain('1. Toronto');
+    // Skipped, and written as skipped rather than closed up — the numbers are
+    // what tie an answer to its question.
+    expect(body).toContain('2. (not answered)');
+    expect(body).toContain('3. the last 12 months');
+  });
+
+  it('leaves the user turn exactly as typed when there was no clarify', async () => {
+    const d = deps();
+    await runAnswerStream(recorder().sink, ASK, d);
+    expect(d.store.messages[0]?.body).toBe(ASK.question);
+    expect(userBodyFor('q', [])).toBe('q');
+    expect(userBodyFor('q', ['', ''])).toBe('q');
+  });
+
+  it('carries no clarifications into a mode that never asks', async () => {
+    // The route-level gate lives in `runAnswer`, which no test can reach; what
+    // is provable here is that a web runner is handed whatever the params say,
+    // so the gate has to be at the door. This pins the shape the door feeds.
+    const seen: readonly string[][] = [];
+    const spy: DeepAnswerFn = async (q, dep) => {
+      (seen as string[][]).push([...dep.clarifications]);
+      return happyStream(q, dep);
+    };
+    await runAnswerStream(recorder().sink, { ...ASK, mode: 'deep' }, deps({ deepAnswer: spy }));
+    expect(seen[0]).toEqual([]);
+  });
+});
+
+describe('the budget, for a mode that spends for minutes', () => {
+  it('admits a fast answer on the small generous estimate', () => {
+    expect(estimatedCostCentsFor('web', DEEP_LIMITS)).toBe(5);
+    expect(estimatedCostCentsFor('grounded', DEEP_LIMITS)).toBe(5);
+    expect(estimatedCostCentsFor('verified', DEEP_LIMITS)).toBe(5);
+  });
+
+  it('admits a deep run only against the largest bill the token ceiling allows', () => {
+    // Two budget states per request (`createAsk` and `createAskStream` hold one
+    // each), every token priced at the strong model's output rate. 12c against
+    // roughly 0.17c for a fast answer.
+    expect(estimatedCostCentsFor('deep', DEEP_LIMITS)).toBe(12);
+  });
+
+  it('tracks the token ceiling rather than being a number somebody picked', () => {
+    // Raise `TMOS_MAX_RUN_TOKENS` and the admission estimate follows, because
+    // it is derived from it. A constant would have gone stale silently.
+    expect(estimatedCostCentsFor('deep', { ...DEEP_LIMITS, maxRunTokens: 200_000 })).toBe(24);
+    expect(estimatedCostCentsFor('web', { ...DEEP_LIMITS, maxRunTokens: 200_000 })).toBe(5);
+  });
+
+  it('tells the pre-flight which mode is asking', async () => {
+    const asked: string[] = [];
+    const d = deps({
+      deepAnswer: deepStream,
+      checkBudget: (mode) => {
+        asked.push(mode);
+        return null;
+      },
+    });
+    await runAnswerStream(recorder().sink, { ...ASK, mode: 'deep' }, d);
+    // One estimate for four modes was fine while they all cost the same.
+    expect(asked).toEqual(['deep']);
+  });
+
+  it('refuses a deep run on a nearly-spent day, before a thread or a cent', async () => {
+    const { frames, sink } = recorder();
+    const d = deps({
+      deepAnswer: deepStream,
+      checkBudget: (mode) => (mode === 'deep' ? 'daily spend would reach 2008c, ceiling 2000c' : null),
+    });
+    await runAnswerStream(sink, { ...ASK, mode: 'deep' }, d);
+
+    expect(frames.map((f) => f.event)).toEqual(['error_msg']);
+    expect(d.store.threads).toHaveLength(0);
+  });
+});
+
+describe('AnswerGuard — one deep run at a time', () => {
+  it('refuses a second deep run even when a slot is free', () => {
+    const guard = new AnswerGuard();
+    guard.begin('q:one', 'deep');
+    // The cap is on RUNS; the ceiling is on MONEY. For a run that spends for
+    // minutes and reports at the end, two of them pass a pre-flight against a
+    // day neither has told anything.
+    expect(() => guard.begin('q:two', 'deep')).toThrow(AnswerBusy);
+    expect(guard.deepSize()).toBe(1);
+  });
+
+  it('lets a fast answer run beside a deep one', () => {
+    const guard = new AnswerGuard();
+    guard.begin('q:one', 'deep');
+    expect(() => guard.begin('q:two')).not.toThrow();
+  });
+
+  it('names the ledger, not the slot count, when it refuses', () => {
+    const guard = new AnswerGuard();
+    guard.begin('q:one', 'deep');
+    try {
+      guard.begin('q:two', 'deep');
+      expect.unreachable();
+    } catch (err) {
+      expect(String((err as Error).message)).toMatch(/budget is only checked when a run starts/);
+    }
+  });
+
+  it('frees the deep slot when the run ends', () => {
+    const guard = new AnswerGuard();
+    const release = guard.begin('q:one', 'deep');
+    release();
+    expect(guard.deepSize()).toBe(0);
+    expect(() => guard.begin('q:two', 'deep')).not.toThrow();
+  });
+
+  it('claims the deep slot from the route, and frees it when the run throws', async () => {
+    const guard = new AnswerGuard();
+    const d = deps({ guard, deepAnswer: () => Promise.reject(new Error('boom')) });
+    await runAnswerStream(recorder().sink, { ...ASK, mode: 'deep' }, d);
+    expect(guard.deepSize()).toBe(0);
+  });
+});
+
+describe('message.mode says “deep” — the gap, closed in order', () => {
+  it('stores a deep turn as itself', async () => {
+    const d = deps({ deepAnswer: deepStream });
+    await runAnswerStream(recorder().sink, { ...ASK, mode: 'deep' }, d);
+    expect(d.store.messages[1]?.mode).toBe('deep');
+  });
+
+  it('gives the per-mode ledger its meaning back, which was the harm', async () => {
+    // §10's cost table sums `cost_cents` by `mode`. While deep stored as
+    // `fast`, one 9c run made the fast row read more expensive than every real
+    // fast answer combined — a per-mode table that is WRONG rather than
+    // incomplete, which is worse, because nobody distrusts it.
+    const d = deps({ deepAnswer: async (q, dep) => ({ ...(await happyStream(q, dep)), costCents: 9 }) });
+    await runAnswerStream(recorder().sink, { ...ASK, mode: 'deep' }, d);
+    expect(d.store.messages[1]?.mode).toBe('deep');
+    expect(d.store.messages[1]?.costCents).toBe(9);
+  });
+
+  it('survives the round trip it would have died on, and the union is still a gate', () => {
+    // THE ORDER THIS RECORDS, because it is the reusable part. `rowToMessage`
+    // decodes `mode` through `asUnion`, which THROWS on an unlisted value, and
+    // `getThread` is both what renders a thread and what `historyFor` reads a
+    // follow-up's context from — so a value the decoder does not know inserts
+    // cleanly and fails on EVERY read, making its own thread permanently
+    // unreadable. Strictly worse than the mislabelling it fixes.
+    //
+    //   1. widen the reader (`AnswerMode` + `MODES` in packages/adapters)
+    //   2. migration 017 widening the CHECK
+    //   3. one word in `messageMode`
+    //
+    // The previous version of this test asserted the throw, so that it would
+    // fail loudly the moment step 1 landed. It did, which is what made step 3
+    // safe to take.
+    const row = {
+      id: '00000000-0000-4000-8000-000000000001',
+      thread_id: '00000000-0000-4000-8000-000000000002',
+      seq: 2,
+      role: 'assistant',
+      body: 'Jiffy jobs start at $129 [1].',
+      mode: 'deep',
+      run_id: 'run-1',
+      cost_cents: '9',
+      answer: null,
+      created_at: '2026-08-31T12:00:00.000Z',
+    };
+    expect(rowToMessage(row).mode).toBe('deep');
+    // Still closed. A gate that admits anything is not a gate, and the next
+    // mode must repeat the three steps rather than inherit an open door.
+    expect(() => rowToMessage({ ...row, mode: 'deep-research' })).toThrow(/not one of/);
+  });
+});
+
+describe('the deep seam, now closed', () => {
+  /** Everything `streamDeep` is handed by this route, with ports that refuse.
+   *  `PORTS.ask` returns null, which is how a dead or blocked model arrives. */
+  const seamDeps = (): DeepAnswerDeps => ({
+    ...PORTS,
+    history: [],
+    clarifications: [],
+    onStatus: () => undefined,
+    onSource: () => undefined,
+    onSpan: () => undefined,
+    onDelta: () => undefined,
+    onSentence: () => undefined,
+    onUnused: () => undefined,
+    onPlan: () => undefined,
+    onStep: () => undefined,
+    onReflect: () => undefined,
+    onClarify: () => undefined,
+  });
+
+  it('is the pipeline, and answers nothing when it cannot plan', async () => {
+    // What stood here asserted the STUB rejected, which was the honest thing to
+    // ship while nothing could run a deep plan. Something can now, so the
+    // assertion becomes the same question asked of a working pipeline: with no
+    // model reachable, does it come back empty and say so — or does it come
+    // back fluent? A stub that returned `{text: "..."}` would have passed every
+    // other test in this file and been the worst behaviour this system can
+    // have: an uncited essay no plan and no source stands behind.
+    const result = await DEEP_ANSWER('How large is the GTA home-services market?', seamDeps());
+
+    expect(result.text).toBe('');
+    expect(result.note ?? '').not.toBe('');
+    expect(result.costCents).toBe(0);
+  });
+
+  it('reports a dead pipeline as a finished run with a note, not as an error', async () => {
+    // The mode is BUILT, so a failure here is a failed call and not a missing
+    // feature, and those two must not look alike to a reader. Same shape the
+    // web and grounded paths produce.
+    const { frames, sink } = recorder();
+    const d = deps({ deepAnswer: DEEP_ANSWER });
+    await runAnswerStream(sink, { ...ASK, mode: 'deep' }, d);
+
+    expect(frames.at(-1)?.event).toBe('done');
+    expect(frames.some((f) => f.event === 'error_msg')).toBe(false);
+    expect(d.store.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    // Something was stored and it is not prose about the GTA market.
+    expect((d.store.messages[1]?.body ?? '').length).toBeGreaterThan(0);
+    expect(d.store.messages[1]?.citations ?? []).toEqual([]);
+  });
+
+  it('refuses by name on a server that offers no deep runner at all', async () => {
+    const { frames, sink } = recorder();
+    const d = deps();
+    await runAnswerStream(sink, { ...ASK, mode: 'deep' }, d);
+
+    expect(frames.map((f) => f.event)).toEqual(['error_msg']);
+    expect(String(frames[0]?.data)).toContain('deep mode is not available');
+    // Refused before a thread: answering a minutes-of-research question with a
+    // 20-second web pass would hand back a weaker answer under a stronger name.
+    expect(d.store.threads).toHaveLength(0);
+  });
+});
+
+describe('answerKey — a clarify reply is not a duplicate', () => {
+  /**
+   * The first live deep run refused the answer to its own question.
+   *
+   * A deep run that stops to ask ends its stream; the reader answers; the reply
+   * arrives carrying the SAME question, because it is the same question. Keyed
+   * on the question alone that reads as a reload, the guard refuses it, and the
+   * workaround was to wait ~8 seconds.
+   */
+  it('separates the reply from the question it answers', () => {
+    const asked = answerKey(null, 'What does Jiffy charge?');
+    const replied = answerKey(null, 'What does Jiffy charge?', ['the Toronto home-services company']);
+    expect(replied).not.toBe(asked);
+  });
+
+  it('still refuses a double-clicked Send — same reader, same replies', () => {
+    const a = answerKey(null, 'q', ['toronto']);
+    expect(answerKey(null, 'q', ['toronto'])).toBe(a);
+  });
+
+  it('treats two readers answering the same clarify differently as two runs', () => {
+    expect(answerKey(null, 'q', ['toronto'])).not.toBe(answerKey(null, 'q', ['vancouver']));
+  });
+
+  it('applies the same rule on a thread, where the question is not in the key at all', () => {
+    expect(answerKey('t1', 'q', ['a'])).not.toBe(answerKey('t1', 'q'));
+    expect(answerKey('t1', 'q')).toBe(answerKey('t1', 'different question'));
   });
 });
