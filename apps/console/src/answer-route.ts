@@ -65,7 +65,16 @@
  * they belong on is a per-span one rather than a summary at the end.
  */
 import type { ServerResponse } from 'node:http';
-import { streamAnswer } from '@tmos/research';
+import {
+  checkSentence,
+  groundedDocs,
+  groundedSourceEvents,
+  groundedSpanEvents,
+  groundedUniverse,
+  research,
+  streamAnswer,
+  streamGrounded,
+} from '@tmos/research';
 import { randomUUID } from 'node:crypto';
 
 import { db, sql } from '@tmos/db';
@@ -89,10 +98,16 @@ import {
 import type {
   AskPort,
   AskStreamPort,
+  CitableSpan,
   ConversationTurn,
   DeltaEvent,
+  Dropped,
+  Point,
   ReadDoc,
   ReadPort,
+  GroundedUniverse,
+  ResearchAnswer,
+  ResearchDeps,
   SearchPort,
   SentenceEvent,
   SourceEvent,
@@ -101,6 +116,11 @@ import type {
 } from '@tmos/research';
 
 import { dailyBudget, noteSpend, refuseForBudget } from './budget-boot.js';
+import {
+  createPostgresGroundedReader,
+  retrieveGrounded,
+  type GroundedEvidence,
+} from './grounded-retrieval.js';
 import { openSse, send, type SseSink } from './sse.js';
 
 /* ── the seam ───────────────────────────────────────────────────────────── */
@@ -175,6 +195,23 @@ export interface StreamAnswerResult {
    */
   readonly related?: readonly string[];
   readonly flagged?: number;
+  /**
+   * Verified mode's shape, and only Verified mode's.
+   *
+   * A `Point` is a claim that survived a WHOLE-ANSWER gate — span verbatim in a
+   * document this run fetched, every figure inside a cited span, honesty gate
+   * clear. Fast mode produces none and must keep sending none: filling these by
+   * casting its dropped SPANS into dropped CLAIMS would file one kind of
+   * refusal under another kind's name.
+   *
+   * `droppedClaims`, not `dropped`, and the name is doing real work: the fast
+   * pipeline's own result already carries a `dropped` of `DroppedSpan` —
+   * attribution's refusals, a quote it could not prove. These are the gate's
+   * refusals, a CLAIM the evidence would not carry. Two different refusals
+   * under one name is how a UI comes to render one as the other.
+   */
+  readonly points?: readonly Point[];
+  readonly droppedClaims?: readonly Dropped[];
 }
 
 export type StreamAnswerFn = (
@@ -196,6 +233,304 @@ export type StreamAnswerFn = (
  * prevent, and it would have passed every test in this file.
  */
 const STREAM_ANSWER: StreamAnswerFn = streamAnswer;
+
+/* ── modes ──────────────────────────────────────────────────────────────── */
+
+/**
+ * THE THREE THINGS THE BOX CAN BE ASKED TO DO.
+ *
+ *  - `web` — the attribute-first pipeline over pages fetched this run. Fast,
+ *    per-sentence checks, the default since §9's founder call.
+ *  - `grounded` — Part 6. Answered from OUR evidence: the world model, live
+ *    Findings, the Brain and the prediction ledger. **It never reaches a search
+ *    provider**, and that is not a cost optimisation — "what do we know about
+ *    Jiffy?" answered from Tavily is a different question with the same words.
+ *  - `verified` — the strict whole-answer gate in `pipeline.ts`, which has been
+ *    sitting unreachable since the answer engine shipped because this route
+ *    took only `q` and `thread`.
+ *
+ * An unknown value is `web` rather than an error. A mode arrives in a query
+ * string, a query string is a link somebody may have kept, and refusing an old
+ * link outright is worse than answering it the default way.
+ */
+type AnswerMode = 'web' | 'grounded' | 'verified';
+
+export function parseMode(raw: string | null | undefined): AnswerMode {
+  const m = (raw ?? '').trim().toLowerCase();
+  return m === 'grounded' || m === 'verified' ? m : 'web';
+}
+
+/**
+ * WHAT GOES IN `message.mode`, WHICH CANNOT SAY "GROUNDED".
+ *
+ * Migration 015 constrains the column to `('fast','verified')`, and migrations
+ * are a locked, serial file this task may not touch. So a grounded turn is
+ * stored as `fast` — which is true about the SHAPE of the answer (streamed
+ * prose, per-sentence checks, no whole-answer gate) and silent about where its
+ * evidence came from. That is a real gap, not a rounding: cost-per-mode and
+ * "was this answered from our own ledger?" cannot be recovered from the row.
+ * Widening the constraint is a one-line migration and a serial change.
+ */
+function messageMode(mode: AnswerMode): 'fast' | 'verified' {
+  return mode === 'verified' ? 'verified' : 'fast';
+}
+
+/* ── grounded mode: the seam ────────────────────────────────────────────── */
+
+/**
+ * WHERE PHASE B FOR GROUNDED MODE PLUGS IN.
+ *
+ * `packages/research/src/grounded.ts` landed while this was being written and
+ * owns phase A: `groundedUniverse()` turns the records this console retrieves
+ * into a `GroundedUniverse`, which IS a `CitableUniverse` — the same shape
+ * `attribute()` produces for the web path. That is the whole design: phase B
+ * and phase C never asked where a span came from.
+ *
+ * What does NOT exist yet is the generation half — a `streamGrounded` beside
+ * `streamAnswer` that writes prose against `groundedSpanBlock(universe)` and
+ * checks each sentence. So the seam is drawn there, and the deps below are the
+ * local restatement of what that function will need: the same style, and the
+ * same reason, as `StreamAnswerFn` above.
+ *
+ * `search` and `read` are deliberately ABSENT from this shape. A grounded
+ * answer that COULD reach a search provider would eventually reach one.
+ */
+interface GroundedAnswerDeps {
+  readonly ask: AskPort;
+  readonly askStream: AskStreamPort;
+  /** Phase A's output, already built. Spans are proven; nothing here needs a
+   *  model to decide what is quotable. */
+  readonly universe: GroundedUniverse;
+  /** What the retrieval looked for and did not find. Not part of the universe,
+   *  because "we hold no facts about this company" is a fact about the QUERY. */
+  readonly excluded: readonly string[];
+  readonly history: readonly ConversationTurn[];
+  readonly onStatus: (e: StatusEvent) => void;
+  readonly onDelta: (e: DeltaEvent) => void;
+  readonly onSentence: (e: SentenceEvent) => void;
+}
+
+export type GroundedAnswerFn = (
+  question: string,
+  deps: GroundedAnswerDeps,
+) => Promise<StreamAnswerResult>;
+
+/**
+ * ▲ THE SEAM ▲ — closed 2026-08-31, once `streamGrounded` landed in `stream.ts`.
+ *
+ * What stood here is worth remembering: a REJECTING stub, chosen over one that
+ * returned plausible prose, because an answer engine whose failure mode is a
+ * fluent uncited essay is the exact thing `packages/research` exists to
+ * prevent, and it would have passed every test in this file.
+ *
+ * `streamGrounded` is phase B and phase C over a prebuilt universe. It calls
+ * the SAME `writeFromSpans` the web path calls, so the marker gate, the
+ * figure-in-a-cited-span check, the honesty gate and the causal lint are the
+ * same code and a `confirmed` badge means the same thing in both modes. It is
+ * given no search port and no read port, which is what makes "grounded mode
+ * never reaches a search provider" structural rather than a rule to remember.
+ *
+ * The deps this route composes are a superset of what it takes — `excluded` and
+ * `history` are read here and not there. `history` in particular goes no
+ * further: grounded mode has no planner to resolve a follow-up against, so the
+ * question reaches phase B as it was typed, and there is no prior prose
+ * anywhere near the generator.
+ */
+export const GROUNDED_ANSWER: GroundedAnswerFn = (question, deps) =>
+  streamGrounded(question, deps.universe, deps);
+
+/**
+ * Grounded mode as a `StreamAnswerFn`, so the run body stays one call.
+ *
+ * Phase A runs HERE rather than behind the seam because the source cards and
+ * the span numbering must be on the wire before any prose exists — that
+ * ordering is the product, per §3 of the plan — and because an empty universe
+ * has to stop the run before a model is ever asked.
+ */
+export function groundedRunner(
+  retrieveEvidence: (question: string) => Promise<GroundedEvidence>,
+  answer: GroundedAnswerFn,
+): StreamAnswerFn {
+  return async (question, deps) => {
+    // Never `searching`. The phase enum has one, and a grounded run announcing
+    // it would be claiming a search it did not do.
+    deps.onStatus({ phase: 'reading', detail: 'the world model, findings, the Brain and the ledger' });
+    const evidence = await retrieveEvidence(question);
+
+    // Phase A. Free and synchronous: internal spans were proven the day they
+    // were written, so there is no extraction pass to pay for.
+    deps.onStatus({ phase: 'attributing', detail: `${evidence.records.length} internal record(s)` });
+    const universe = groundedUniverse(question, evidence.records);
+    for (const source of groundedSourceEvents(universe)) deps.onSource(source);
+    for (const span of groundedSpanEvents(universe)) deps.onSpan(span);
+
+    if (universe.spans.length === 0) {
+      // A legitimate outcome, and the honest one. Falling back to the web here
+      // would silently answer a different question — the reader asked what WE
+      // know — while wearing grounded mode's badge. `universe.note` already
+      // distinguishes "we hold nothing" from "we hold things and none can be
+      // quoted" from "all we have is a forecast", so it is relayed rather than
+      // replaced with a line of this route's own.
+      return {
+        text: '',
+        costCents: 0,
+        sources: groundedDocs(universe),
+        queries: [],
+        note: universe.note,
+        unanswered: [...evidence.excluded],
+      };
+    }
+
+    const result = await answer(question, {
+      ask: deps.ask,
+      askStream: deps.askStream,
+      universe,
+      excluded: evidence.excluded,
+      history: deps.history,
+      onStatus: deps.onStatus,
+      onDelta: deps.onDelta,
+      onSentence: deps.onSentence,
+    });
+
+    return {
+      ...result,
+      // The retrieval record, so a thread reopened tomorrow still shows which
+      // of our own rows it rested on. `queries` stays empty: none were run.
+      sources: result.sources ?? groundedDocs(universe),
+      queries: result.queries ?? [],
+      unanswered: [...(result.unanswered ?? []), ...evidence.excluded],
+    };
+  };
+}
+
+/* ── verified mode: the strict gate, reachable at last ──────────────────── */
+
+type ResearchFn = (question: string, deps: ResearchDeps) => Promise<ResearchAnswer>;
+
+/** Shown on the source card. A URL we cannot parse is one we still fetched. */
+const domainOf = (url: string): string => {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+};
+
+/** Markers ride inside the sentence, before its final stop, the way the fast
+ *  pipeline emits them — so one renderer handles both modes. */
+function withMarkers(claim: string, markers: readonly number[]): string {
+  const tag = markers.map((n) => `[${n}]`).join('');
+  const body = claim.trim();
+  if (tag === '') return body;
+  return /[.!?]$/.test(body) ? `${body.slice(0, -1)} ${tag}${body.slice(-1)}` : `${body} ${tag}.`;
+}
+
+/**
+ * VERIFIED MODE, ON THE SAME WIRE AS FAST MODE.
+ *
+ * `research()` is unchanged — it is the asset, and §2 of the plan keeps it as
+ * the second mode precisely because it is slower and stricter. What is new is
+ * the adapter: its `Point[]` becomes numbered spans, one sentence per point,
+ * emitted through the same `source`/`span`/`delta`/`sentence` contract the
+ * browser already renders.
+ *
+ * THREE THINGS THIS DELIBERATELY DOES NOT DO:
+ *
+ *  1. **It does not stream.** Nothing is emitted until the whole answer has
+ *     passed the gate, because that IS Verified mode. Emitting the events at
+ *     the end is the design, not a shortcut.
+ *  2. **It never sends `summary`.** `research()` returns the model's own
+ *     prose alongside the points, and that prose is NOT verified — only the
+ *     points are. Putting it on the wire would slip unchecked generative text
+ *     into the mode whose entire promise is that nothing unchecked is shown.
+ *     The answer is assembled from the surviving claims, by us, deterministically.
+ *  3. **It does not assume `confirmed`.** Every assembled sentence goes through
+ *     `checkSentence` — the same function fast mode uses — so a badge means the
+ *     same thing in both modes. `verifyPoints` should already have guaranteed
+ *     it; running the check anyway is what stops the two gates drifting into
+ *     one badge with two meanings, and it adds the causal lint `research()`
+ *     has never run.
+ */
+export function verifiedRunner(run: ResearchFn): StreamAnswerFn {
+  return async (question, deps) => {
+    deps.onStatus({ phase: 'planning' });
+    const answer = await run(question, {
+      ask: deps.ask,
+      search: deps.search,
+      read: deps.read,
+      onStep: (line) => deps.onStatus({ phase: 'reading', detail: line }),
+    });
+
+    const indexOf = new Map<string, number>();
+    answer.sources.forEach((doc, i) => {
+      indexOf.set(doc.url, i + 1);
+      deps.onSource({ i: i + 1, url: doc.url, title: doc.title, domain: domainOf(doc.url), kind: 'web' });
+    });
+
+    /* Points → spans. One id per distinct quote, so a quote cited by two claims
+     * is one number and one card, exactly as attribution numbers a universe. */
+    deps.onStatus({ phase: 'attributing', detail: `${answer.points.length} verified point(s)` });
+    const spans: CitableSpan[] = [];
+    const idOf = new Map<string, number>();
+    const markersFor = (point: Point): number[] => {
+      const out: number[] = [];
+      for (const c of point.citations) {
+        const docIndex = indexOf.get(c.url);
+        if (docIndex === undefined) continue;
+        const key = `${docIndex}\u0000${c.span}`;
+        let id = idOf.get(key);
+        if (id === undefined) {
+          id = spans.length + 1;
+          idOf.set(key, id);
+          const span: CitableSpan = { id, docIndex, url: c.url, span: c.span };
+          spans.push(span);
+          deps.onSpan({ id, sourceIndex: docIndex, quote: c.span });
+        }
+        if (!out.includes(id)) out.push(id);
+      }
+      return out;
+    };
+
+    deps.onStatus({ phase: 'writing' });
+    const written: string[] = [];
+    let flagged = 0;
+    answer.points.forEach((point, i) => {
+      const n = i + 1;
+      const text = withMarkers(point.claim, markersFor(point));
+      written.push(text);
+      deps.onDelta({ n, text: i === 0 ? text : ` ${text}` });
+      const verdict = checkSentence(n, text, spans);
+      if (verdict.verdict === 'flagged') flagged += 1;
+      deps.onSentence(verdict);
+    });
+
+    deps.onStatus({ phase: 'checking', detail: `${answer.dropped.length} claim(s) dropped by the gate` });
+
+    return {
+      text: written.join(' '),
+      costCents: answer.costCents,
+      sources: answer.sources,
+      queries: answer.queries,
+      unanswered: answer.unanswered,
+      points: answer.points,
+      droppedClaims: answer.dropped,
+      flagged,
+      // Written here, never lifted from `answer.summary` — an unverified
+      // summary stored as the message body is the "empty answer replayed as a
+      // lie" bug with a longer sentence.
+      ...(answer.points.length === 0
+        ? {
+            note:
+              answer.dropped.length > 0
+                ? `Verified mode kept nothing: all ${answer.dropped.length} claim(s) were refused because their evidence did not check out. The refusals are listed below.`
+                : 'Verified mode found nothing it could quote for that question.',
+          }
+        : {}),
+    };
+  };
+}
+
+const VERIFIED_ANSWER: StreamAnswerFn = verifiedRunner(research);
 
 /* ── the concurrency guard ──────────────────────────────────────────────── */
 
@@ -376,6 +711,11 @@ function sourceUrlsFor(m: MessageRecord): string[] {
   for (const raw of all) {
     const url = raw.trim();
     if (url === '' || seen.has(url)) continue;
+    // Only fetchable pages. A grounded turn stores LOCATORS here — `finding ·
+    // f-1`, `20-architecture/SYSTEM.md § Roles` — and the follow-up planner
+    // hands this list to the reader as pages to re-read. A locator would be
+    // fetched, fail, and count against the run's page budget for nothing.
+    if (!/^https?:\/\//i.test(url)) continue;
     seen.add(url);
     out.push(url);
   }
@@ -467,8 +807,11 @@ function bodyFor(result: StreamAnswerResult): string {
 function answerPayloadFor(result: StreamAnswerResult): AnswerPayload | null {
   if (result.sources === undefined && result.queries === undefined) return null;
   return {
-    points: [],
-    dropped: [],
+    // Empty for fast and grounded runs, which genuinely produce no `Point`;
+    // populated for Verified mode, where the gate's kept and refused claims ARE
+    // the answer and dropping them would delete the mode's whole output.
+    points: result.points ?? [],
+    dropped: result.droppedClaims ?? [],
     unanswered: result.unanswered ?? [],
     sources: result.sources ?? [],
     queries: result.queries ?? [],
@@ -489,12 +832,25 @@ interface AnswerParams {
   readonly question: string;
   /** Non-null continues an existing thread. A follow-up, not a new question. */
   readonly threadId: string | null;
+  /** Absent is `web`, which is what every request sent before 2026-08-31. */
+  readonly mode?: AnswerMode;
 }
 
 export interface AnswerDeps {
   readonly store: AnswerStore;
   readonly guard: AnswerGuard;
+  /** Web mode. Named as it always was, so nothing that wired this breaks. */
   readonly streamAnswer: StreamAnswerFn;
+  /**
+   * The other two modes, optional so a caller can decline to offer one.
+   *
+   * A mode with no runner is REFUSED by name rather than quietly answered the
+   * default way: somebody who asked for Verified and silently got Fast has been
+   * told a weaker answer is a stronger one, which is the failure this whole
+   * package is organised against.
+   */
+  readonly groundedAnswer?: StreamAnswerFn;
+  readonly verifiedAnswer?: StreamAnswerFn;
   readonly ports: AnswerPorts;
   /** Joins every `ai_usage_log` row this run writes to the message it paid for. */
   readonly runId: string;
@@ -503,6 +859,13 @@ export interface AnswerDeps {
   /** The day's ledger, or the reason it refuses. Null means go. */
   readonly checkBudget: () => string | null;
   readonly noteCost: (costCents: number) => void;
+}
+
+/** The runner this mode needs, or null when the caller did not supply one. */
+function runnerFor(mode: AnswerMode, deps: AnswerDeps): StreamAnswerFn | null {
+  if (mode === 'grounded') return deps.groundedAnswer ?? null;
+  if (mode === 'verified') return deps.verifiedAnswer ?? null;
+  return deps.streamAnswer;
 }
 
 /** Below this there is no question to plan searches from. Same floor as
@@ -531,6 +894,15 @@ export async function runAnswerStream(
   const question = params.question.trim();
   if (question.length < MIN_QUESTION_CHARS) {
     send(sink, 'error_msg', 'Ask a fuller question — a few words cannot be turned into a search.');
+    return;
+  }
+
+  // Before the budget and before the thread: a mode this server cannot run is
+  // not a question that should cost anything or leave a thread behind.
+  const mode = params.mode ?? 'web';
+  const runner = runnerFor(mode, deps);
+  if (runner === null) {
+    send(sink, 'error_msg', `${mode} mode is not available on this server, and answering in another mode would be answering a different question.`);
     return;
   }
 
@@ -613,8 +985,8 @@ export async function runAnswerStream(
       createdAt: deps.now().toISOString(),
     });
 
-    /* 3 ─ the pipeline */
-    const result = await deps.streamAnswer(question, { ...deps.ports, history, ...relay });
+    /* 3 ─ the pipeline for the mode that was asked for */
+    const result = await runner(question, { ...deps.ports, history, ...relay });
 
     /* 4 ─ the answer, with the markers it actually used */
     const messageId = deps.newId();
@@ -627,7 +999,8 @@ export async function runAnswerStream(
       // own note says WHY it is empty, so it is preferred over a generic line;
       // naming it either way beats aborting the turn and losing the question.
       body: bodyFor(result),
-      mode: 'fast',
+      // `grounded` collapses to `fast` here — see `messageMode`.
+      mode: messageMode(mode),
       runId: deps.runId,
       costCents: result.costCents,
       answer: answerPayloadFor(result),
@@ -685,12 +1058,17 @@ export async function runAnswer(
   res: ServerResponse,
   question: string,
   threadId: string | null,
+  mode: AnswerMode = 'web',
 ): Promise<void> {
   openSse(res);
 
   const env = loadEnv();
   const providers = searchProvidersFromEnv();
-  if (providers.length === 0) {
+  // Grounded mode reads our own records and never a provider, so a console with
+  // no search key can still answer "what do we know about X" — which is, for a
+  // system whose whole point is the evidence it already holds, the more
+  // important half. Web and Verified both search and both still refuse.
+  if (providers.length === 0 && mode !== 'grounded') {
     send(res, 'error_msg', 'No search provider configured. Set TAVILY_API_KEY or EXA_API_KEY.');
     res.end();
     return;
@@ -722,11 +1100,18 @@ export async function runAnswer(
 
   await runAnswerStream(
     res,
-    { question, threadId },
+    { question, threadId, mode },
     {
       store: PG_STORE,
       guard: GUARD,
       streamAnswer: STREAM_ANSWER,
+      // Retrieval is real and runs today; `GROUNDED_ANSWER` is the open seam
+      // and refuses rather than writing prose it cannot cite.
+      groundedAnswer: groundedRunner(
+        (q) => retrieveGrounded(q, createPostgresGroundedReader()),
+        GROUNDED_ANSWER,
+      ),
+      verifiedAnswer: VERIFIED_ANSWER,
       ports: {
         ask: createAsk(askConfig),
         askStream: createAskStream(askConfig),

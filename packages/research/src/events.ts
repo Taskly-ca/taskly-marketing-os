@@ -27,14 +27,46 @@
  * reader in one glance and is the whole point of the attribute-first design.
  */
 
+/**
+ * Where a source came from, which decides how a reader can check it.
+ *
+ * `web` opens in a tab. The other three cannot, and saying so is the point:
+ * a Brain passage and a competitor page are both evidence, and a reader who
+ * cannot tell them apart cannot judge the answer. An internal citation is
+ * stronger in one way — it was verified when it was written, not by this run —
+ * and weaker in another: it is us citing ourselves.
+ */
+export type SourceKind =
+  /** A page fetched from the open web this run. */
+  | 'web'
+  /** The world model — a value read off a competitor's own page, with the
+   *  sentence it came from, on the date we read it. */
+  | 'world'
+  /** A Taskly document. What we believe, decided or published. */
+  | 'brain'
+  /** The prediction ledger — a forecast, with the probability we put on it. */
+  | 'ledger';
+
 /** A document this run actually retrieved. Emitted before any prose. */
 export interface SourceEvent {
   /** 1-based, stable for the run. What a span points back to. */
   readonly i: number;
+  /**
+   * An openable URL for `web` and `world`; for `brain` and `ledger` a locator
+   * that is NOT a link — a Brain path with its section, or a ledger row.
+   * `kind` is what tells a renderer which it is holding. Never fabricate an
+   * http URL for an internal record to make a card look uniform.
+   */
   readonly url: string;
   readonly title: string;
-  /** Rendered on the source card; also what a favicon is fetched for. */
+  /** Rendered on the source card. For an internal source this is the origin
+   *  in words ("world model", "brain"), not a hostname. */
   readonly domain: string;
+  /** Absent means `web` — every source emitted before 2026-08-31 was one. */
+  readonly kind?: SourceKind;
+  /** When the underlying observation was made, for a `world` or `ledger` row.
+   *  A competitor fact from June and one from today are not equal evidence. */
+  readonly observedAt?: string;
 }
 
 /** One proven-verbatim quote. `id` is the number that appears in the prose. */

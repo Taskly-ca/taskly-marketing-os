@@ -56,6 +56,21 @@
  * every sentence. A follow-up whose reused pages have stopped supporting it
  * comes back short, flagged, or refused; there is no path by which a claim
  * inherits an earlier turn's confidence.
+ *
+ * ── AND WHAT GROUNDED MODE CHANGES, WHICH IS LESS AGAIN ────────────────────
+ *
+ * `grounded.ts` builds a citable universe out of Postgres — the world model,
+ * live findings, the Brain, the ledger — with no search, no fetch and no
+ * attribution pass, because an internal span was proven the day it was written.
+ * What it needed was stage 5 and nothing else, so stage 5 is now
+ * `writeFromSpans` and BOTH entry points call it: `streamAnswer` after its four
+ * web stages, `streamGrounded` over the universe it is handed.
+ *
+ * One copy, and the reason is the badge. `confirmed` is rendered by one client
+ * that cannot tell which pipeline wrote the sentence under it, so the checks
+ * behind it must be the same code and not merely the same intention. The long
+ * argument for this shape — and against the smaller-diff alternative, a
+ * `prebuilt` flag on `StreamDeps` — is above `writeFromSpans`.
  */
 import { checkCausalLanguage, checkHonesty } from '@tmos/guardrails';
 
@@ -70,6 +85,8 @@ import type {
   StatusEvent,
 } from './events.js';
 import { planSearches, relatedQuestions, reuseUrls } from './follow-up.js';
+import type { GroundedSpan, GroundedUniverse } from './grounded.js';
+import { groundedDocs, groundedSpanBlock } from './grounded.js';
 import type { ResearchLimits } from './pipeline.js';
 import { DEFAULT_LIMITS, dedupeHits } from './pipeline.js';
 import type { SentencePiece } from './sentences.js';
@@ -332,6 +349,201 @@ class MarkerGate {
   }
 }
 
+/* ── stage 5, on its own, over any universe ───────────────────────────────── */
+
+/**
+ * GENERATE AND CHECK, LIFTED OUT OF `streamAnswer` — AND WHY IT IS A FUNCTION
+ * RATHER THAN A FLAG.
+ *
+ * Grounded mode arrives holding a finished citable universe. `grounded.ts`
+ * built it out of Postgres: no search, no fetch, and no attribution model pass,
+ * because an internal span was proven verbatim on the day it was written. What
+ * it still needs is everything from here down — prose, sentence boundaries, the
+ * marker gate, `checkSentence` on every sentence — and there was no door to it.
+ *
+ * Two doors were possible.
+ *
+ *  (a) An optional `prebuilt` on `StreamDeps`, with `streamAnswer` skipping
+ *      stages 1-4 when it is set. Smaller diff, and rejected on two counts.
+ *      First, `StreamDeps` requires `search` and `read`; a grounded caller
+ *      would have to hand over a search port it must never use, and a grounded
+ *      answer that COULD reach a search provider eventually reaches one — "what
+ *      do we know about Jiffy?" answered from a search engine is a different
+ *      question with the same words. Second, "the web path is unchanged" would
+ *      become a property of a branch at the top of a 200-line function, holding
+ *      only as long as every future edit to stages 1-4 keeps it holding. That
+ *      is a promise re-made on every commit.
+ *
+ *  (b) This. Stage 5 is a function; both entry points call it. The web path's
+ *      stages 1-4 are not touched at all, so "unchanged" is structural rather
+ *      than a thing to re-verify, and grounded mode cannot reach a search port
+ *      because it is never given one.
+ *
+ * The reason it is one function and not two copies is the badge. `confirmed`
+ * means one thing — every marker resolves, every figure is in a span that
+ * sentence cites — and it is rendered by one client that cannot tell which
+ * pipeline produced the sentence under it. A second copy of this loop would
+ * drift, and the day it drifts the badge quietly acquires two meanings and
+ * nothing anywhere says which one a reader is looking at.
+ *
+ * What crosses is a `CitableUniverse`'s spans and a `ReadDoc[]`, so nothing in
+ * here can know where the evidence came from — the same reason `GEN_SYSTEM`
+ * needs no grounded variant.
+ */
+export interface SpanGeneration {
+  /**
+   * The `QUESTION:` block, composed by the caller.
+   *
+   * The web path appends the reader's literal follow-up under the standalone
+   * rewrite; grounded mode has no rewrite and passes the question as typed.
+   * Composed there rather than here because only the caller knows whether a
+   * rewrite happened, and a `standalone !== question` test in this file would
+   * be re-deriving what the planner already decided.
+   */
+  readonly asked: string;
+  /** The resolved question, for the related-questions pass — which is scored
+   *  against the spans, so it must be asked about the question they answer. */
+  readonly standalone: string;
+  /** The numbered span list, already formatted. Both callers produce the
+   *  identical shape (`groundedSpanBlock` mirrors the web path's) and it is
+   *  passed in rather than built here so neither has to hand over the doc
+   *  titles a second time in a second shape. */
+  readonly spanBlock: string;
+  readonly spans: readonly CitableSpan[];
+  /** Only `relatedQuestions` reads these, for the titles it grounds against. */
+  readonly docs: readonly ReadDoc[];
+}
+
+export interface SpanGenerationDeps {
+  /** The related-questions pass. Not generation — see `AskStreamPort`. */
+  readonly ask: AskPort;
+  readonly askStream: AskStreamPort;
+  readonly onStatus?: (e: StatusEvent) => void;
+  readonly onDelta?: (e: DeltaEvent) => void;
+  readonly onSentence?: (e: SentenceEvent) => void;
+}
+
+export interface WrittenAnswer {
+  /** What the reader saw: the prose with fabricated markers removed. Equal to
+   *  the concatenation of every `DeltaEvent`, by construction. */
+  readonly text: string;
+  readonly sentences: readonly SentenceEvent[];
+  readonly flagged: number;
+  readonly related: readonly string[];
+  /** Non-empty when the answer is partial and the reader is owed the reason. */
+  readonly note: string;
+  /** Generation plus the related pass. Phase A's cost is the caller's, because
+   *  only the caller knows whether phase A cost anything. */
+  readonly costCents: number;
+}
+
+/**
+ * Write prose against a proven universe, checking each sentence as it closes.
+ *
+ * Announces `writing`, then `checking`, then `done` — the staging is part of
+ * the wire contract and belongs with the work, so both modes reveal the same
+ * way. It does NOT announce the phases before it: what happened upstream is
+ * the caller's to describe, and a grounded run must never say `searching`.
+ */
+export async function writeFromSpans(
+  req: SpanGeneration,
+  deps: SpanGenerationDeps,
+): Promise<WrittenAnswer> {
+  const status = deps.onStatus ?? ((): void => undefined);
+  const emitDelta = deps.onDelta ?? ((): void => undefined);
+  const emitSentence = deps.onSentence ?? ((): void => undefined);
+
+  status({ phase: 'writing' });
+  const known = new Set(req.spans.map((s) => s.id));
+  const splitter = new SentenceSplitter();
+  const gate = new MarkerGate((id) => known.has(id));
+  const sentences: SentenceEvent[] = [];
+  let cost = 0;
+  let shown = '';
+  let raw = '';
+
+  const consume = (pieces: readonly SentencePiece[], closed: readonly { n: number; text: string }[]): void => {
+    for (const piece of pieces) {
+      for (const d of gate.feed(piece)) {
+        shown += d.text;
+        emitDelta(d);
+      }
+    }
+    for (const c of closed) {
+      const verdict = checkSentence(c.n, c.text, req.spans);
+      sentences.push(verdict);
+      emitSentence(verdict);
+    }
+  };
+
+  const feed = (chunk: string): void => {
+    if (chunk === '') return;
+    raw += chunk;
+    const out = splitter.push(chunk);
+    consume(out.pieces, out.closed);
+  };
+
+  const written = await deps.askStream.askStream(
+    GEN_SYSTEM,
+    `${req.asked}\n\nSPANS — the only things you may cite:\n\n${req.spanBlock}`,
+    GEN_MAX_TOKENS,
+    feed,
+  );
+
+  // A refused or dead call is not a short answer. `AskStreamPort` says the
+  // deltas are a side channel and the returned result is the answer, and the
+  // reason is exactly this branch: a half-answer reads like a whole one, and
+  // flushing the splitter here would hand a truncated fragment to the checker,
+  // which would then stamp a verdict on a sentence the model never finished.
+  if (!written) {
+    const note =
+      'The answer stopped part-way — the model call failed or the budget ceiling refused it.';
+    status({ phase: 'done', detail: note });
+    return {
+      text: shown,
+      sentences,
+      flagged: sentences.filter((s) => s.verdict === 'flagged').length,
+      related: [],
+      note,
+      costCents: cost,
+    };
+  }
+  cost += written.costCents;
+
+  // The returned text is authoritative. Normally it is exactly what streamed;
+  // when a transport dropped deltas it is longer, and the tail is fed through
+  // the same splitter so those sentences are checked like any other. If it is
+  // not an extension of what streamed the two disagree about the past, and
+  // re-emitting would renumber sentences the client has already rendered — so
+  // the disagreement is reported rather than reconciled.
+  let note = '';
+  if (written.text.startsWith(raw)) feed(written.text.slice(raw.length));
+  else if (raw !== '') note = 'The streamed text and the returned answer disagreed; only the streamed part was checked.';
+  else feed(written.text);
+
+  status({ phase: 'checking' });
+  const tail = splitter.end();
+  consume(tail.pieces, tail.closed);
+  for (const d of gate.flush()) {
+    shown += d.text;
+    emitDelta(d);
+  }
+
+  const flagged = sentences.filter((s) => s.verdict === 'flagged').length;
+
+  // What to ask next. Last, and out of the spans rather than the prose: a
+  // suggestion sits in a rail that reads like navigation, which is the most
+  // credulous place on the page, and an ungrounded one there is an uncited
+  // claim wearing a question mark. `bindRelated` refuses anything the proven
+  // quotes do not name — including a figure they do not carry.
+  const suggested = await relatedQuestions(req.standalone, req.spans, req.docs, deps.ask);
+  cost += suggested.costCents;
+
+  status({ phase: 'done', detail: `${sentences.length} sentence(s), ${flagged} flagged` });
+
+  return { text: shown, sentences, flagged, related: suggested.related, note, costCents: cost };
+}
+
 /* ── the pipeline ─────────────────────────────────────────────────────────── */
 
 export interface StreamDeps {
@@ -561,39 +773,12 @@ export async function streamAnswer(question: string, deps: StreamDeps): Promise<
   // exists to prevent, so the reason is returned instead of an answer.
   if (universe.spans.length === 0) return stop(universe.note, universe);
 
-  /* 5 ─ generate, splitting and checking as it arrives */
-  status({ phase: 'writing' });
-  const known = new Set(universe.spans.map((s) => s.id));
-  const splitter = new SentenceSplitter();
-  const gate = new MarkerGate((id) => known.has(id));
-  const sentences: SentenceEvent[] = [];
-  let shown = '';
-  let raw = '';
-
-  const consume = (pieces: readonly SentencePiece[], closed: readonly { n: number; text: string }[]): void => {
-    for (const piece of pieces) {
-      for (const d of gate.feed(piece)) {
-        shown += d.text;
-        emitDelta(d);
-      }
-    }
-    for (const c of closed) {
-      const verdict = checkSentence(c.n, c.text, universe.spans);
-      sentences.push(verdict);
-      emitSentence(verdict);
-    }
-  };
-
-  const feed = (chunk: string): void => {
-    if (chunk === '') return;
-    raw += chunk;
-    const out = splitter.push(chunk);
-    consume(out.pieces, out.closed);
-  };
-
-  const spans = universe.spans
-    .map((s) => `[${s.id}] (source ${s.docIndex} — ${sources[s.docIndex - 1]?.title ?? ''})\n"${s.span}"`)
-    .join('\n\n');
+  /* 5, 6 ─ generate, check, and propose what to ask next.
+   *
+   * Delegated to `writeFromSpans` rather than inlined, so grounded mode runs
+   * this exact loop. What crosses is the universe's spans, the docs and one
+   * composed question string — nothing below this line can know a search ran.
+   */
 
   // ── THE CONVERSATION STOPS HERE, AND THIS IS THE LOAD-BEARING PART ────────
   //
@@ -615,77 +800,194 @@ export async function streamAnswer(question: string, deps: StreamDeps): Promise<
   // no shortcut whatsoever on evidence. If the reused pages have stopped
   // supporting the earlier claim, this turn is short or flagged, which is the
   // correct outcome and the one the conversation must not be able to soften.
-  const asked =
-    plan.standalone === question
-      ? `QUESTION: ${question}`
-      : `QUESTION: ${plan.standalone}\n(the reader typed this as a follow-up: "${question}")`;
-
-  const written = await deps.askStream.askStream(
-    GEN_SYSTEM,
-    `${asked}\n\nSPANS — the only things you may cite:\n\n${spans}`,
-    GEN_MAX_TOKENS,
-    feed,
+  //
+  // The boundary is now enforced by the SHAPE as well as by this comment:
+  // `writeFromSpans` has no `history` field to pass one to, so history cannot
+  // reach phase B by a future edit that forgets to read this paragraph.
+  const written = await writeFromSpans(
+    {
+      // The reader's own words are still shown beside the standalone rewrite,
+      // so the answer is visibly a reply to what was typed rather than to a
+      // rewrite nobody saw. This is the ONE thing about the conversation that
+      // crosses, and it is the reader's own sentence.
+      asked:
+        plan.standalone === question
+          ? `QUESTION: ${question}`
+          : `QUESTION: ${plan.standalone}\n(the reader typed this as a follow-up: "${question}")`,
+      standalone: plan.standalone,
+      spanBlock: universe.spans
+        .map(
+          (sp) =>
+            `[${sp.id}] (source ${sp.docIndex} — ${sources[sp.docIndex - 1]?.title ?? ''})\n"${sp.span}"`,
+        )
+        .join('\n\n'),
+      spans: universe.spans,
+      docs: sources,
+    },
+    {
+      ask: deps.ask,
+      askStream: deps.askStream,
+      onStatus: status,
+      onDelta: emitDelta,
+      onSentence: emitSentence,
+    },
   );
-
-  // A refused or dead call is not a short answer. `AskStreamPort` says the
-  // deltas are a side channel and the returned result is the answer, and the
-  // reason is exactly this branch: a half-answer reads like a whole one, and
-  // flushing the splitter here would hand a truncated fragment to the checker,
-  // which would then stamp a verdict on a sentence the model never finished.
-  if (!written) {
-    return {
-      ...stop('The answer stopped part-way — the model call failed or the budget ceiling refused it.', universe),
-      text: shown,
-      sentences,
-      flagged: sentences.filter((s) => s.verdict === 'flagged').length,
-    };
-  }
   cost += written.costCents;
-
-  // The returned text is authoritative. Normally it is exactly what streamed;
-  // when a transport dropped deltas it is longer, and the tail is fed through
-  // the same splitter so those sentences are checked like any other. If it is
-  // not an extension of what streamed the two disagree about the past, and
-  // re-emitting would renumber sentences the client has already rendered — so
-  // the disagreement is reported rather than reconciled.
-  let note = '';
-  if (written.text.startsWith(raw)) feed(written.text.slice(raw.length));
-  else if (raw !== '') note = 'The streamed text and the returned answer disagreed; only the streamed part was checked.';
-  else feed(written.text);
-
-  status({ phase: 'checking' });
-  const tail = splitter.end();
-  consume(tail.pieces, tail.closed);
-  for (const d of gate.flush()) {
-    shown += d.text;
-    emitDelta(d);
-  }
-
-  const flagged = sentences.filter((s) => s.verdict === 'flagged').length;
-
-  // 6 ─ what to ask next. Last, and out of the spans rather than the prose:
-  // a suggestion sits in a rail that reads like navigation, which is the most
-  // credulous place on the page, and an ungrounded one there is an uncited
-  // claim wearing a question mark. `bindRelated` refuses anything the proven
-  // quotes do not name — including a figure they do not carry.
-  const suggested = await relatedQuestions(plan.standalone, universe.spans, sources, deps.ask);
-  cost += suggested.costCents;
-
-  status({ phase: 'done', detail: `${sentences.length} sentence(s), ${flagged} flagged` });
 
   return {
     question,
-    text: shown,
+    text: written.text,
     sources,
     spans: universe.spans,
     dropped: universe.dropped,
-    sentences,
-    flagged,
+    sentences: written.sentences,
+    flagged: written.flagged,
     queries,
     unanswered: cannot,
-    related: suggested.related,
+    related: written.related,
     reused,
-    note,
+    note: written.note,
     costCents: cost,
+  };
+}
+
+/* ── grounded mode: the same phases, over evidence we already hold ────────── */
+
+/**
+ * The result of answering from our own records.
+ *
+ * Deliberately NOT a `StreamedAnswer`: three of that shape's fields would have
+ * to be filled with lies of omission here. `queries` would be an empty array
+ * that reads like "the search found nothing" rather than "no search was run";
+ * `reused` is about pages a previous turn fetched, and this path fetches none;
+ * `unanswered` is the planner's list of sub-questions it could not turn into a
+ * query, and there is no planner. A caller that wants to render both modes
+ * through one component is better served by a shape that omits what did not
+ * happen than by one that reports zero for it.
+ *
+ * `spans` are `GroundedSpan`s, so a renderer keeps the `kind` and `observedAt`
+ * a reader needs in order to weigh a Brain passage differently from a
+ * competitor's own page.
+ */
+export interface GroundedAnswer {
+  readonly question: string;
+  readonly text: string;
+  /** The universe projected as documents — the retrieval record, so a thread
+   *  reopened tomorrow still shows which of our own rows it rested on. */
+  readonly sources: readonly ReadDoc[];
+  readonly spans: readonly GroundedSpan[];
+  readonly dropped: readonly DroppedSpan[];
+  readonly sentences: readonly SentenceEvent[];
+  readonly flagged: number;
+  readonly related: readonly string[];
+  readonly note: string;
+  readonly costCents: number;
+}
+
+export interface GroundedStreamDeps {
+  readonly ask: AskPort;
+  readonly askStream: AskStreamPort;
+  readonly onStatus?: (e: StatusEvent) => void;
+  readonly onDelta?: (e: DeltaEvent) => void;
+  readonly onSentence?: (e: SentenceEvent) => void;
+}
+
+/**
+ * Answer one question from a universe the caller already built.
+ *
+ * ── WHAT IS ABSENT, AND EVERY ABSENCE IS THE POINT ─────────────────────────
+ *
+ * **No `search`, no `read`.** Not an omission for brevity: a grounded answer
+ * that COULD reach a search provider would eventually reach one, and the
+ * reader who picked this mode asked what WE know. The ports are not in the
+ * shape, so the mode cannot silently become the web mode under load, under a
+ * retry, or under a future edit.
+ *
+ * **No `history`.** The web path lets a conversation reach the PLANNER, and
+ * grounded mode has no planner — the console's retrieval is deterministic term
+ * and entity matching over our own rows. So the question reaches phase B as it
+ * was typed. The honest consequence, stated rather than hidden: a grounded
+ * follow-up phrased "and in Vancouver?" retrieves against those four words and
+ * will come back empty. That is a retrieval limitation with a visible failure,
+ * which is the right trade against the alternative — handing phase B a previous
+ * answer, whose failure is invisible.
+ *
+ * **No attribution pass, and no cost for phase A.** `grounded.ts` says why: the
+ * span already exists and was checked when it was written, so a model asked to
+ * propose it could only re-word it on the way past.
+ *
+ * ── WHAT IS PRESENT IS EVERYTHING PHASE C DOES ─────────────────────────────
+ *
+ * `writeFromSpans` is the same function the web path calls. Markers resolve or
+ * are deleted before a reader sees them; every figure must be in a span the
+ * sentence cites; the honesty gate and the causal lint run on every sentence.
+ * Not "the equivalent checks" — the same code, so a `confirmed` badge means the
+ * same thing in both modes, which is the entire reason grounded mode is a
+ * second entry point rather than a second pipeline.
+ */
+export async function streamGrounded(
+  question: string,
+  universe: GroundedUniverse,
+  deps: GroundedStreamDeps,
+): Promise<GroundedAnswer> {
+  const status = deps.onStatus ?? ((): void => undefined);
+  const docs = groundedDocs(universe);
+
+  // An empty universe stops here, before a model is asked anything. Same rule
+  // as the web path and for the same reason — generating against no evidence is
+  // the plain-LLM failure this package exists to prevent — but the reason is
+  // better here: `groundedUniverse` already separates "we hold nothing on this"
+  // from "we hold things and none can be quoted" from "all we have is a
+  // forecast", and a founder reads those three very differently. So its note is
+  // relayed, never replaced with a line of this function's own.
+  if (universe.spans.length === 0) {
+    const note =
+      universe.note !== ''
+        ? universe.note
+        : 'There was nothing quotable in the internal records this question matched.';
+    status({ phase: 'done', detail: note });
+    return {
+      question,
+      text: '',
+      sources: docs,
+      spans: universe.spans,
+      dropped: universe.dropped,
+      sentences: [],
+      flagged: 0,
+      related: [],
+      note,
+      costCents: 0,
+    };
+  }
+
+  const written = await writeFromSpans(
+    {
+      // No rewrite to disclose: the question reaches phase B as it was typed.
+      asked: `QUESTION: ${question}`,
+      standalone: question,
+      // `groundedSpanBlock` and not a local build: it already produces the shape
+      // the web path produces, and it is the one place that decides no
+      // observation date goes into the prompt. A date beside a quote invites
+      // "as of August 2026", whose "2026" is in no cited span — phase C would
+      // then flag a sentence for faithfully repeating what we told it.
+      spanBlock: groundedSpanBlock(universe),
+      spans: universe.spans,
+      docs,
+    },
+    deps,
+  );
+
+  return {
+    question,
+    text: written.text,
+    sources: docs,
+    spans: universe.spans,
+    dropped: universe.dropped,
+    sentences: written.sentences,
+    flagged: written.flagged,
+    related: written.related,
+    note: written.note,
+    // Phase A was free, so generation and the related pass are the whole bill.
+    costCents: written.costCents,
   };
 }

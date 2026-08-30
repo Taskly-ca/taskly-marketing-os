@@ -20,8 +20,10 @@ import type {
   SpanEvent,
   StatusEvent,
 } from './events.js';
-import type { StreamedAnswer } from './stream.js';
-import { checkSentence, streamAnswer } from './stream.js';
+import type { GroundedRecord } from './grounded.js';
+import { groundedUniverse } from './grounded.js';
+import type { GroundedAnswer, StreamedAnswer } from './stream.js';
+import { checkSentence, streamAnswer, streamGrounded } from './stream.js';
 import type {
   AskPort,
   AskResult,
@@ -704,5 +706,445 @@ describe('streamAnswer — related questions', () => {
   it('offers nothing when there was nothing to answer from', async () => {
     const { answer } = await run('anything', undefined, ask({ spans: [], related: ['Anything?'] }));
     expect(answer.related).toEqual([]);
+  });
+});
+
+/* ── the web path, pinned ─────────────────────────────────────────────────── */
+
+/**
+ * THE REGRESSION NET FOR EXTRACTING STAGE 5.
+ *
+ * Grounded mode needs generate-and-check without stages 1-4, and the way that
+ * was made reachable is by lifting the loop out of `streamAnswer` into
+ * `writeFromSpans`. An extraction is exactly the kind of change that alters
+ * behaviour by a byte and is never noticed: one moved `status()` call, one
+ * `note` that stops being relayed, one cost no longer added.
+ *
+ * So these assertions were written and run GREEN against `streamAnswer` BEFORE
+ * a line of it moved, and are the before/after comparison. They pin the three
+ * things a refactor silently breaks — the exact bytes phase B is handed, the
+ * exact order the phases announce themselves, and the whole returned answer
+ * object for one fixed run — rather than sampling a field or two.
+ */
+describe('streamAnswer — the web path, pinned byte-for-byte', () => {
+  const TEXT = `${SPAN_1} [1]. ${SPAN_2} [2].`;
+
+  /** What phase B is handed, in full. Any change to the composition of this
+   *  string is a change to what the model writes from. */
+  const USER = [
+    'QUESTION: What do competitors charge in Toronto?',
+    '',
+    'SPANS — the only things you may cite:',
+    '',
+    `[1] (source 1 — Jiffy)\n"${SPAN_1}"`,
+    '',
+    `[2] (source 2 — TaskRabbit)\n"${SPAN_2}"`,
+  ].join('\n');
+
+  /** The same fixture as `run`, with the generation prompt captured. */
+  function pinned(text: string): Promise<{ answer: StreamedAnswer; cap: Captured; prompt: () => { system: string; user: string } }> {
+    const cap = capture();
+    let seen = { system: '', user: '' };
+    return streamAnswer('What do competitors charge in Toronto?', {
+      ask: ask(),
+      askStream: {
+        askStream: async (system, user, _m, onDelta): Promise<AskResult | null> => {
+          seen = { system, user };
+          onDelta(text);
+          return { text, costCents: 0.05 };
+        },
+      },
+      search: [search],
+      read,
+      ...cap.deps,
+    }).then((answer) => ({ answer, cap, prompt: () => seen }));
+  }
+
+  it('hands phase B exactly these bytes', async () => {
+    const { prompt } = await pinned(TEXT);
+    expect(prompt().user).toBe(USER);
+    // The system prompt is the honesty-safe one, and it names the closed marker
+    // range rather than a URL — the property the whole design rests on.
+    expect(prompt().system).toContain('YOU MAY USE ONLY THE NUMBERED SPANS YOU ARE GIVEN.');
+    expect(prompt().system).not.toMatch(/https?:\/\//);
+  });
+
+  it('returns exactly this answer object', async () => {
+    const { answer } = await pinned(TEXT);
+    expect(answer).toEqual({
+      question: 'What do competitors charge in Toronto?',
+      text: TEXT,
+      sources: DOCS,
+      spans: SPANS,
+      dropped: [],
+      sentences: [
+        { n: 0, verdict: 'confirmed' },
+        { n: 1, verdict: 'confirmed' },
+      ],
+      flagged: 0,
+      queries: ['jiffy toronto pricing'],
+      unanswered: [],
+      related: [],
+      reused: [],
+      note: '',
+      costCents: answer.costCents,
+    });
+    expect(answer.costCents).toBeCloseTo(0.10, 6);
+  });
+
+  it('announces exactly these phases, with exactly these details', async () => {
+    const { cap } = await pinned(TEXT);
+    expect(cap.status).toEqual([
+      { phase: 'planning' },
+      { phase: 'searching', detail: 'jiffy toronto pricing' },
+      { phase: 'reading', detail: '2 result(s)' },
+      { phase: 'attributing', detail: '2 document(s)' },
+      { phase: 'writing' },
+      { phase: 'checking' },
+      { phase: 'done', detail: '2 sentence(s), 0 flagged' },
+    ]);
+  });
+
+  it('announces exactly these phases when the model call dies', async () => {
+    // The failure branch has its own `done`, its own note, and no `checking` —
+    // three things an extraction can quietly reorder.
+    const cap = capture();
+    const answer = await streamAnswer('What do competitors charge in Toronto?', {
+      ask: ask(),
+      askStream: { askStream: async (): Promise<AskResult | null> => null },
+      search: [search],
+      read,
+      ...cap.deps,
+    });
+    expect(cap.status.map((s) => s.phase)).toEqual([
+      'planning', 'searching', 'reading', 'attributing', 'writing', 'done',
+    ]);
+    expect(cap.status.at(-1)?.detail).toBe(answer.note);
+    expect(answer.note).toContain('stopped part-way');
+    // The plan and the attribution were paid for; the generation was not.
+    expect(answer.costCents).toBeCloseTo(0.03, 6);
+    expect(answer.spans).toEqual(SPANS);
+    expect(answer.related).toEqual([]);
+  });
+});
+
+/* ── grounded mode: the same phase C, over our own evidence ───────────────── */
+
+/**
+ * WHAT THESE TESTS ARE FOR, AND IT IS ONE THING.
+ *
+ * A `confirmed` badge on a grounded answer must mean exactly what it means on a
+ * web answer: every marker resolves to a real span, and every figure in the
+ * sentence is in one of the spans that sentence cites. Not "nearly the same" —
+ * the badge is one badge, rendered by one client, and a reader has no way to
+ * know which pipeline produced the sentence under it.
+ *
+ * So every case in `streamAnswer — the other ways a sentence fails` is repeated
+ * here against a universe built by `groundedUniverse` instead of `attribute`.
+ * If any of them ever diverges, the badge has two meanings and the design has
+ * quietly failed. They pass for a structural reason and not a coincidental one:
+ * both paths call the same `writeFromSpans`.
+ */
+const G_FACT_SPAN = 'Their standard rate is $89 per visit for two hours of work';
+const G_BRAIN_SPAN = 'Taskly keeps a 20% commission on every marketplace booking';
+
+const G_RECORDS: readonly GroundedRecord[] = [
+  {
+    type: 'world_fact',
+    id: 'fact-1',
+    title: 'Jiffy — standard rate',
+    url: URL_A,
+    snippet: G_FACT_SPAN,
+    observedAt: '2026-08-01',
+  },
+  {
+    type: 'brain_passage',
+    id: 'chunk-1',
+    title: '60-business/pricing/PRICING_v3.md',
+    path: '60-business/pricing/PRICING_v3.md',
+    heading: 'Commission',
+    text: G_BRAIN_SPAN,
+    right: 'grounds',
+    reviewed: '2026-07-14',
+  },
+];
+
+const G_QUESTION = 'What do we know about what Jiffy charges?';
+
+function grounded(
+  text: string,
+  opts: { records?: readonly GroundedRecord[]; chunks?: readonly string[]; askPort?: AskPort } = {},
+): Promise<{
+  answer: GroundedAnswer;
+  cap: Captured;
+  prompt: () => { system: string; user: string };
+  calls: number;
+}> {
+  const cap = capture();
+  let seen = { system: '', user: '' };
+  let calls = 0;
+  const universe = groundedUniverse(G_QUESTION, opts.records ?? G_RECORDS);
+  return streamGrounded(G_QUESTION, universe, {
+    ask: opts.askPort ?? ask(),
+    askStream: {
+      askStream: async (system, user, _m, onDelta): Promise<AskResult | null> => {
+        calls += 1;
+        seen = { system, user };
+        for (const c of opts.chunks ?? [text]) onDelta(c);
+        return { text, costCents: 0.05 };
+      },
+    },
+    onStatus: cap.deps.onStatus,
+    onDelta: cap.deps.onDelta,
+    onSentence: cap.deps.onSentence,
+  }).then((answer) => ({ answer, cap, prompt: () => seen, calls: calls }));
+}
+
+describe('streamGrounded — prose over a prebuilt universe', () => {
+  const TEXT = `${G_FACT_SPAN} [1]. ${G_BRAIN_SPAN} [2].`;
+
+  it('writes prose whose markers resolve, and confirms it', async () => {
+    const { answer, cap } = await grounded(TEXT);
+    expect(cap.sentences).toEqual([
+      { n: 0, verdict: 'confirmed' },
+      { n: 1, verdict: 'confirmed' },
+    ]);
+    expect(answer.flagged).toBe(0);
+    expect(answer.text).toBe(TEXT);
+    expect(answer.note).toBe('');
+    // The deltas are the answer, exactly as on the web path.
+    expect(cap.deltas.map((d) => d.text).join('')).toBe(answer.text);
+  });
+
+  it('is handed the same span block shape the web path builds, and no dates', async () => {
+    const { prompt } = await grounded(TEXT);
+    expect(prompt().user).toBe(
+      [
+        `QUESTION: ${G_QUESTION}`,
+        '',
+        'SPANS — the only things you may cite:',
+        '',
+        `[1] (source 1 — Jiffy — standard rate)\n"${G_FACT_SPAN}"`,
+        '',
+        `[2] (source 2 — 60-business/pricing/PRICING_v3.md)\n"${G_BRAIN_SPAN}"`,
+      ].join('\n'),
+    );
+    // An observation date in the prompt invites "as of August 2026", whose
+    // "2026" is in no cited span — phase C would flag a sentence for faithfully
+    // repeating something we told it.
+    expect(prompt().user).not.toContain('2026-08-01');
+    expect(prompt().user).not.toContain('2026-07-14');
+  });
+
+  it('uses the same generation prompt as the web path, not a grounded variant', async () => {
+    // One prompt, so a rule tightened for one mode cannot be missing in the
+    // other. The badge is the same badge; the instructions behind it must be
+    // the same instructions.
+    const { prompt: web } = await (async () => {
+      const cap = capture();
+      let seen = { system: '', user: '' };
+      await streamAnswer('What do competitors charge in Toronto?', {
+        ask: ask(),
+        askStream: {
+          askStream: async (system, user): Promise<AskResult | null> => {
+            seen = { system, user };
+            return { text: `${SPAN_1} [1].`, costCents: 0.05 };
+          },
+        },
+        search: [search],
+        read,
+        ...cap.deps,
+      });
+      return { prompt: (): { system: string; user: string } => seen };
+    })();
+    const { prompt } = await grounded(TEXT);
+    expect(prompt().system).toBe(web().system);
+  });
+
+  it('never mentions the conversation, because it is never given one', async () => {
+    // Same boundary as the web path, reached differently: grounded mode has no
+    // history parameter at all, so there is nothing to leak.
+    const { prompt } = await grounded(TEXT);
+    expect(prompt().user).not.toContain('follow-up');
+    expect(prompt().user.split('\n\n')[0]).toBe(`QUESTION: ${G_QUESTION}`);
+  });
+
+  it('announces writing, checking and done — never planning or searching', async () => {
+    // A grounded run reaches no search provider. Announcing a phase it did not
+    // run would be claiming retrieval it did not do.
+    const { cap } = await grounded(TEXT);
+    expect(cap.status.map((s) => s.phase)).toEqual(['writing', 'checking', 'done']);
+    expect(cap.status.at(-1)?.detail).toBe('2 sentence(s), 0 flagged');
+  });
+
+  it('carries the internal sources and costs only the generation', async () => {
+    const { answer } = await grounded(TEXT);
+    expect(answer.sources.map((s) => s.url)).toEqual([
+      URL_A,
+      '60-business/pricing/PRICING_v3.md § Commission',
+    ]);
+    // Phase A over our own evidence is free — the spans were proven the day
+    // they were written. 0.05 generate + 0.02 related, and no plan, no extract.
+    expect(answer.costCents).toBeCloseTo(0.07, 6);
+  });
+
+  it('reaches the same verdicts when the answer arrives one character at a time', async () => {
+    const whole = await grounded(TEXT);
+    const dribbled = await grounded(TEXT, { chunks: [...TEXT] });
+    expect(dribbled.cap.sentences).toEqual(whole.cap.sentences);
+    expect(dribbled.answer.text).toBe(whole.answer.text);
+  });
+});
+
+describe('streamGrounded — every phase C check runs, identically', () => {
+  it('deletes a fabricated marker and flags its sentence', async () => {
+    const TEXT = `${G_FACT_SPAN} [1]. Jiffy also covers Hamilton and Barrie [9].`;
+    const half = TEXT.indexOf('[9]') + 2;
+    for (const chunks of [[TEXT], [...TEXT], [TEXT.slice(0, half), TEXT.slice(half)]]) {
+      const { answer, cap } = await grounded(TEXT, { chunks });
+      expect(answer.text).not.toContain('[9');
+      expect(answer.text).toContain('[1]');
+      expect(cap.deltas.map((d) => d.text).join('')).toBe(answer.text);
+      expect(cap.sentences[1]?.verdict).toBe('flagged');
+      expect(cap.sentences[1]?.why).toContain('[9]');
+      expect(cap.sentences[1]?.why).toContain('no span behind it');
+    }
+  });
+
+  it('flags a figure that is in no grounded span it cites', async () => {
+    const { answer, cap } = await grounded(
+      `${G_FACT_SPAN} [1]. The GTA market is worth $2.1B [1].`,
+    );
+    expect(cap.sentences.map((s) => s.verdict)).toEqual(['confirmed', 'flagged']);
+    expect(cap.sentences[1]?.why).toContain('"2.1"');
+    // The wording is the contract, in both modes: unconfirmed, not false.
+    expect(cap.sentences[1]?.why).toContain('unconfirmed');
+    expect(cap.sentences[1]?.why).not.toContain('false');
+    expect(answer.flagged).toBe(1);
+  });
+
+  it('flags a figure carried across from one span into a sentence citing another', async () => {
+    // The grounded-specific shape of the same failure: "$89" is genuinely in
+    // the universe, on span 1. This sentence cites span 2. A check that pooled
+    // the universe rather than the CITED spans would confirm it.
+    const { cap } = await grounded(`The standard rate is $89 per visit [2].`);
+    expect(cap.sentences[0]?.verdict).toBe('flagged');
+    expect(cap.sentences[0]?.why).toContain('"89"');
+  });
+
+  it('flags a banned trust claim, even about our own commission', async () => {
+    const { cap } = await grounded('Every Tasker on the platform is fully vetted [2].');
+    expect(cap.sentences[0]?.why).toContain('honesty gate');
+  });
+
+  it('flags causal language written out of internal evidence', async () => {
+    const { cap } = await grounded(`The 20% commission caused bookings to fall [2].`);
+    expect(cap.sentences[0]?.why).toContain('causal language');
+    expect(cap.sentences[0]?.why).toContain('caused');
+  });
+
+  it('reports every reason a sentence failed, not only the first', async () => {
+    const { cap } = await grounded('Growth of 40% was caused by demand from fully vetted taskers [9].');
+    expect(cap.sentences[0]?.why).toContain('[9]');
+    expect(cap.sentences[0]?.why).toContain('"40"');
+    expect(cap.sentences[0]?.why).toContain('caused');
+    expect(cap.sentences[0]?.why).toContain('honesty gate');
+  });
+
+  it('does not stamp a verdict on a sentence the model never finished', async () => {
+    const cap = capture();
+    const answer = await streamGrounded(G_QUESTION, groundedUniverse(G_QUESTION, G_RECORDS), {
+      ask: ask(),
+      askStream: {
+        askStream: async (_s, _u, _m, onDelta): Promise<AskResult | null> => {
+          onDelta(`${G_FACT_SPAN} [1]. Taskly keeps a`);
+          return null;
+        },
+      },
+      onStatus: cap.deps.onStatus,
+      onDelta: cap.deps.onDelta,
+      onSentence: cap.deps.onSentence,
+    });
+    expect(answer.note).toContain('stopped part-way');
+    expect(answer.sentences).toEqual([{ n: 0, verdict: 'confirmed' }]);
+    expect(cap.status.map((s) => s.phase)).toEqual(['writing', 'done']);
+    // Nothing was generated successfully, so nothing was paid for.
+    expect(answer.costCents).toBe(0);
+  });
+
+  it('checks the tail when the returned answer is longer than what streamed', async () => {
+    const full = `${G_FACT_SPAN} [1]. The GTA market is worth $2.1B [1].`;
+    const cap = capture();
+    const answer = await streamGrounded(G_QUESTION, groundedUniverse(G_QUESTION, G_RECORDS), {
+      ask: ask(),
+      askStream: {
+        askStream: async (_s, _u, _m, onDelta): Promise<AskResult | null> => {
+          onDelta(`${G_FACT_SPAN} [1]. `);
+          return { text: full, costCents: 0.05 };
+        },
+      },
+      onStatus: cap.deps.onStatus,
+      onDelta: cap.deps.onDelta,
+      onSentence: cap.deps.onSentence,
+    });
+    expect(answer.sentences.map((s) => s.verdict)).toEqual(['confirmed', 'flagged']);
+    expect(answer.text).toBe(full);
+  });
+});
+
+describe('streamGrounded — an empty universe refuses', () => {
+  it('never calls the model when nothing matched, and relays the reason', async () => {
+    const { answer, cap, calls } = await grounded('unused', { records: [] });
+    expect(calls).toBe(0);
+    expect(answer.text).toBe('');
+    expect(cap.deltas).toEqual([]);
+    expect(cap.sentences).toEqual([]);
+    expect(answer.note).toMatch(/no internal records/i);
+    expect(answer.costCents).toBe(0);
+  });
+
+  it('relays the different reason when records matched but none was quotable', async () => {
+    // A draft is retrievable and uncitable. "We hold nothing on this" and "we
+    // hold things and none can be quoted" read differently to a founder, and
+    // `groundedUniverse` already separates them — so they are relayed, not
+    // replaced with a line of this file's own.
+    const { answer, calls } = await grounded('unused', {
+      records: [
+        {
+          type: 'brain_passage',
+          id: 'chunk-2',
+          title: 'draft',
+          path: '95-research/DRAFT.md',
+          text: 'We might charge thirty percent one day, who knows.',
+          right: 'context_only',
+          reviewed: null,
+        },
+      ],
+    });
+    expect(calls).toBe(0);
+    expect(answer.note).toContain('nothing quotable');
+    expect(answer.dropped[0]?.why).toContain('unreviewed thinking');
+  });
+
+  it('offers no related questions when there was nothing to answer from', async () => {
+    const { answer } = await grounded('unused', {
+      records: [],
+      askPort: ask({ related: ['Anything at all?'] }),
+    });
+    expect(answer.related).toEqual([]);
+  });
+});
+
+describe('streamGrounded — related questions come out of the spans', () => {
+  it('keeps only the suggestions the proven quotes actually name', async () => {
+    const { answer } = await grounded(`${G_FACT_SPAN} [1].`, {
+      askPort: ask({
+        related: [
+          'Is the 20% commission competitive against marketplace rivals?',
+          'How large is the Calgary snow-removal market?',
+        ],
+      }),
+    });
+    expect(answer.related).toEqual(['Is the 20% commission competitive against marketplace rivals?']);
   });
 });

@@ -44,14 +44,22 @@ import {
   answerKey,
   citationsFor,
   epilogueFor,
+  GROUNDED_ANSWER,
+  groundedRunner,
   historyFor,
+  parseMode,
   runAnswerStream,
   titleFor,
+  verifiedRunner,
   type AnswerDeps,
   type AnswerStore,
   type EpilogueEvent,
+  type GroundedAnswerFn,
   type StreamAnswerFn,
 } from './answer-route.js';
+import type { GroundedRecord, GroundedUniverse } from '@tmos/research';
+import { groundedUniverse } from '@tmos/research';
+import type { GroundedEvidence } from './grounded-retrieval.js';
 import type { SseSink } from './sse.js';
 
 /* ── fakes ──────────────────────────────────────────────────────────────── */
@@ -677,5 +685,443 @@ describe('runAnswerStream — the epilogue on the wire', () => {
     const epilogue = frames.at(-2);
     expect(epilogue?.event).toBe('epilogue');
     expect((epilogue?.data as { note: string }).note).toContain('No search results');
+  });
+});
+
+/* ── mode routing ───────────────────────────────────────────────────────── */
+
+describe('parseMode', () => {
+  it('defaults to web, which is what every request sent before modes existed', () => {
+    expect(parseMode(null)).toBe('web');
+    expect(parseMode('')).toBe('web');
+    expect(parseMode('web')).toBe('web');
+  });
+
+  it('reads the two new modes, case and whitespace insensitive', () => {
+    expect(parseMode(' Grounded ')).toBe('grounded');
+    expect(parseMode('VERIFIED')).toBe('verified');
+  });
+
+  it('falls back to web for a mode it does not know rather than erroring', () => {
+    // A mode rides in a query string, and a query string is a link somebody may
+    // have kept. Refusing an old link is worse than answering it the usual way.
+    expect(parseMode('deep-research')).toBe('web');
+  });
+});
+
+describe('runAnswerStream — the mode decides the pipeline', () => {
+  const tagged = (tag: string): StreamAnswerFn => async () => ({ text: `${tag} answer`, costCents: 1 });
+
+  it('sends a web question to the streaming pipeline', async () => {
+    const d = deps({ groundedAnswer: tagged('grounded'), verifiedAnswer: tagged('verified') });
+    await runAnswerStream(recorder().sink, { ...ASK, mode: 'web' }, d);
+    expect(d.store.messages[1]?.body).toContain('The market grew 12%');
+  });
+
+  it('sends a grounded question to the grounded runner and never to the web one', async () => {
+    let web = 0;
+    const d = deps({
+      streamAnswer: async (q, x) => {
+        web += 1;
+        return happyStream(q, x);
+      },
+      groundedAnswer: tagged('grounded'),
+    });
+    await runAnswerStream(recorder().sink, { ...ASK, mode: 'grounded' }, d);
+
+    expect(web).toBe(0);
+    expect(d.store.messages[1]?.body).toBe('grounded answer');
+  });
+
+  it('sends a verified question to the strict pipeline and records the mode on the row', async () => {
+    const d = deps({ verifiedAnswer: tagged('verified') });
+    await runAnswerStream(recorder().sink, { ...ASK, mode: 'verified' }, d);
+
+    expect(d.store.messages[1]?.body).toBe('verified answer');
+    // The column has carried only 'fast' since threads existed. Verified mode
+    // being unreachable is why, and cost-per-mode is unanswerable without it.
+    expect(d.store.messages[1]?.mode).toBe('verified');
+  });
+
+  it('stores a grounded turn as `fast`, because the column cannot say otherwise', async () => {
+    // Migration 015 constrains mode to ('fast','verified') and migrations are a
+    // locked serial file. This assertion exists to make the gap visible rather
+    // than to bless it: widening the constraint is a one-line migration.
+    const d = deps({ groundedAnswer: tagged('grounded') });
+    await runAnswerStream(recorder().sink, { ...ASK, mode: 'grounded' }, d);
+    expect(d.store.messages[1]?.mode).toBe('fast');
+  });
+
+  it('refuses a mode with no runner by name, before a thread or a cent', async () => {
+    const { frames, sink } = recorder();
+    const d = deps();
+    await runAnswerStream(sink, { ...ASK, mode: 'grounded' }, d);
+
+    expect(frames.map((f) => f.event)).toEqual(['error_msg']);
+    expect(String(frames[0]?.data)).toContain('grounded mode is not available');
+    // Silently answering in web mode would tell somebody who asked what WE know
+    // that the open web's answer was ours.
+    expect(d.store.threads).toHaveLength(0);
+  });
+});
+
+/* ── grounded mode ──────────────────────────────────────────────────────── */
+
+const FACT: GroundedRecord = {
+  type: 'world_fact',
+  id: 'fact-1',
+  title: 'Jiffy — price_min',
+  url: 'https://jiffy.ca/pricing',
+  snippet: 'Jobs start at $129 for a two-hour visit.',
+  observedAt: '2026-08-20',
+};
+
+const PASSAGE: GroundedRecord = {
+  type: 'brain_passage',
+  id: 'c-1',
+  title: '60-business/PRICING_v3.md',
+  path: '60-business/PRICING_v3.md',
+  heading: 'Commission',
+  text: 'Commission is 20%, HST-inclusive.',
+  right: 'grounds',
+  reviewed: '2026-08-01',
+};
+
+const EVIDENCE: GroundedEvidence = {
+  records: [FACT, PASSAGE],
+  terms: ['jiffy', 'price'],
+  entities: ['Jiffy'],
+  excluded: [],
+};
+
+const EMPTY_EVIDENCE: GroundedEvidence = {
+  records: [],
+  terms: ['snow'],
+  entities: [],
+  excluded: ['no world-model facts: the question names no company we hold facts about'],
+};
+
+/** Ports that make a network call a test failure rather than a live request. */
+const FORBIDDEN_PORTS = {
+  ask: PORTS.ask,
+  askStream: PORTS.askStream,
+  search: [
+    {
+      name: 'tavily',
+      search: (): never => {
+        throw new Error('grounded mode reached a search provider');
+      },
+    },
+  ] as readonly SearchPort[],
+  read: {
+    read: (): never => {
+      throw new Error('grounded mode fetched a page');
+    },
+  } as ReadPort,
+};
+
+function groundedRelay(): { events: { event: string; data: unknown }[]; deps: Parameters<StreamAnswerFn>[1] } {
+  const events: { event: string; data: unknown }[] = [];
+  const push = (event: string) => (data: unknown) => {
+    events.push({ event, data });
+  };
+  return {
+    events,
+    deps: {
+      ...FORBIDDEN_PORTS,
+      history: [],
+      onStatus: push('status'),
+      onSource: push('source'),
+      onSpan: push('span'),
+      onDelta: push('delta'),
+      onSentence: push('sentence'),
+    },
+  };
+}
+
+describe('groundedRunner', () => {
+  it('never reaches a search provider or fetches a page', async () => {
+    const { deps: dep } = groundedRelay();
+    const run = groundedRunner(
+      async () => EVIDENCE,
+      async () => ({ text: 'Jiffy starts at $129 [1].', costCents: 2 }),
+    );
+    // The ports throw if touched: "grounded mode does not search" has to be
+    // structural, because a fallback to the web would answer a different
+    // question wearing this mode's badge.
+    await expect(run('What do we know about Jiffy?', dep)).resolves.toBeDefined();
+  });
+
+  it('never announces a search it did not run', async () => {
+    const { events, deps: dep } = groundedRelay();
+    await groundedRunner(async () => EVIDENCE, async () => ({ text: 'a [1].', costCents: 1 }))(
+      'What do we know about Jiffy?',
+      dep,
+    );
+    const phases = events.filter((e) => e.event === 'status').map((e) => (e.data as { phase: string }).phase);
+    expect(phases).not.toContain('searching');
+    expect(phases[0]).toBe('reading');
+  });
+
+  it('puts every internal source on the wire, numbered, before any span', async () => {
+    const { events, deps: dep } = groundedRelay();
+    await groundedRunner(
+      async () => EVIDENCE,
+      async () => ({ text: 'Jiffy starts at $129 [1].', costCents: 2 }),
+    )('What do we know about Jiffy?', dep);
+
+    const names = events.map((e) => e.event);
+    expect(names.indexOf('source')).toBeLessThan(names.indexOf('span'));
+    const sources = events.filter((e) => e.event === 'source').map((e) => e.data as { i: number; kind: string; observedAt?: string; url: string });
+    expect(sources.map((s) => s.i)).toEqual([1, 2]);
+    // `kind` is what tells the renderer what it is holding, and the Brain card
+    // keeps its locator rather than being dressed up as a link.
+    expect(sources.map((s) => s.kind)).toEqual(['world', 'brain']);
+    expect(sources[1]?.url).toBe('60-business/PRICING_v3.md § Commission');
+    expect(sources.map((s) => s.observedAt)).toEqual(['2026-08-20', '2026-08-01']);
+    // Spans reach the wire before any prose, and every one is already proven.
+    expect(events.filter((e) => e.event === 'span')).toHaveLength(2);
+  });
+
+  it('hands phase B a universe whose spans are already proven, and no records', async () => {
+    const seen: GroundedUniverse[] = [];
+    // Typed as the seam, so a change to what phase B is promised breaks here.
+    const phaseB: GroundedAnswerFn = async (_q, d) => {
+      seen.push(d.universe);
+      return { text: 'a [1].', costCents: 1 };
+    };
+    const { deps: dep } = groundedRelay();
+    await groundedRunner(async () => EVIDENCE, phaseB)('What do we know about Jiffy?', dep);
+
+    // Phase A over our own evidence costs nothing: the spans were written down
+    // the day they were verified, so no extraction pass is paid for.
+    expect(seen[0]?.costCents).toBe(0);
+    expect(seen[0]?.spans.map((s) => s.span)).toEqual([
+      'Jobs start at $129 for a two-hour visit.',
+      'Commission is 20%, HST-inclusive.',
+    ]);
+  });
+
+  it('refuses when nothing matched, and does not call the answer half at all', async () => {
+    let called = false;
+    const { deps: dep } = groundedRelay();
+    const result = await groundedRunner(
+      async () => EMPTY_EVIDENCE,
+      async () => {
+        called = true;
+        return { text: 'plausible prose', costCents: 1 };
+      },
+    )('How should we price snow removal?', dep);
+
+    expect(called).toBe(false);
+    expect(result.text).toBe('');
+    // `groundedUniverse`'s own note, relayed rather than replaced: it separates
+    // "we hold nothing on this" from "we hold things and none can be quoted".
+    expect(result.note).toMatch(/no internal records/i);
+    // The reader is told what was refused and why, not just that it is empty.
+    expect(result.unanswered?.join(' ')).toMatch(/names no company/);
+  });
+
+  it('keeps the internal records as the retrieval record, with no queries', async () => {
+    const { deps: dep } = groundedRelay();
+    const result = await groundedRunner(async () => EVIDENCE, async () => ({ text: 'a [1].', costCents: 1 }))(
+      'What do we know about Jiffy?',
+      dep,
+    );
+    expect(result.sources?.map((s) => s.url)).toEqual([
+      'https://jiffy.ca/pricing',
+      '60-business/PRICING_v3.md § Commission',
+    ]);
+    expect(result.queries).toEqual([]);
+  });
+});
+
+describe('the grounded seam, now closed', () => {
+  /** A streamer that emits `text` and returns it whole — the shape
+   *  `AskStreamPort` specifies, where the return value is the answer. */
+  const streamer = (text: string): AskStreamPort => ({
+    askStream: async (_s, _u, _m, onDelta) => {
+      onDelta(text);
+      return { text, costCents: 2 };
+    },
+  });
+
+  const answerWith = (text: string, sink: Partial<Parameters<GroundedAnswerFn>[1]> = {}) =>
+    GROUNDED_ANSWER('What do we know about Jiffy?', {
+      ask: { ask: async () => ({ text: JSON.stringify({ questions: [] }), costCents: 0 }) },
+      askStream: streamer(text),
+      universe: groundedUniverse('What do we know about Jiffy?', EVIDENCE.records),
+      excluded: [],
+      history: [],
+      onStatus: () => undefined,
+      onDelta: () => undefined,
+      onSentence: () => undefined,
+      ...sink,
+    });
+
+  it('writes prose against the universe instead of refusing', async () => {
+    // What stood here asserted the stub REFUSED, which was the honest thing to
+    // ship while nothing could write against a grounded universe. Something can
+    // now, so the assertion is the same question asked of a working pipeline:
+    // does a marker that resolves come back confirmed?
+    const verdicts: { verdict: string; why?: string }[] = [];
+    const result = await answerWith('Jobs start at $129 for a two-hour visit [1].', {
+      onSentence: (e) => void verdicts.push(e),
+    });
+    expect(result.text).toBe('Jobs start at $129 for a two-hour visit [1].');
+    expect(verdicts).toEqual([{ n: 0, verdict: 'confirmed' }]);
+  });
+
+  it('runs the same phase C it runs on the web path', async () => {
+    // The point of the whole design, asserted at the route boundary rather than
+    // only inside the package: the badge means one thing, so a fabricated
+    // marker never reaches the reader and its sentence flags — in grounded mode
+    // exactly as in web mode.
+    const verdicts: { verdict: string; why?: string }[] = [];
+    const result = await answerWith('Jiffy also covers Hamilton [9].', {
+      onSentence: (e) => void verdicts.push(e),
+    });
+    expect(result.text).not.toContain('[9');
+    expect(verdicts[0]?.verdict).toBe('flagged');
+    expect(verdicts[0]?.why).toContain('no span behind it');
+  });
+
+  it('reports a dead model call rather than storing a half-answer', async () => {
+    // `PORTS.askStream` returns null. The run reaches `done` with a note and no
+    // prose — the same shape the web path produces, and NOT an error frame: the
+    // mode is built, so a failure here is a failed call and not a missing
+    // feature. Those two must not look alike to a reader.
+    const { frames, sink } = recorder();
+    const d = deps({ groundedAnswer: groundedRunner(async () => EVIDENCE, GROUNDED_ANSWER) });
+    await runAnswerStream(sink, { ...ASK, mode: 'grounded' }, d);
+
+    expect(frames.at(-1)?.event).toBe('done');
+    expect(frames.some((f) => f.event === 'error_msg')).toBe(false);
+    const body = d.store.messages.at(-1)?.body ?? '';
+    expect(body).toContain('stopped part-way');
+  });
+});
+
+/* ── verified mode ──────────────────────────────────────────────────────── */
+
+const DOC = { url: 'https://jiffy.ca/pricing', title: 'Jiffy pricing', text: 'Jobs start at $129 for a two-hour visit. We serve Toronto.' };
+
+const researchAnswer = (over: Record<string, unknown> = {}) => ({
+  question: 'q',
+  summary: 'Jiffy is the market leader and is growing fast.',
+  points: [
+    { claim: 'Jiffy jobs start at $129.', citations: [{ url: DOC.url, span: 'Jobs start at $129 for a two-hour visit.' }] },
+  ],
+  dropped: [{ claim: 'Jiffy has 40% share', why: '"40" appears in the claim but in no cited span' }],
+  unanswered: ['what Jiffy charges in Vancouver'],
+  sources: [DOC],
+  queries: ['jiffy pricing toronto'],
+  costCents: 7,
+  ...over,
+});
+
+describe('verifiedRunner', () => {
+  it('stages the same events fast mode does, so one renderer handles both', async () => {
+    const { events, deps: dep } = groundedRelay();
+    await verifiedRunner(async () => researchAnswer())('q', { ...dep, ...PORTS });
+
+    const names = events.map((e) => e.event);
+    expect(names.indexOf('source')).toBeLessThan(names.indexOf('span'));
+    expect(names.indexOf('span')).toBeLessThan(names.indexOf('delta'));
+    expect(names.indexOf('delta')).toBeLessThan(names.indexOf('sentence'));
+  });
+
+  it('assembles the answer from the surviving claims and NEVER from the summary', async () => {
+    const { deps: dep } = groundedRelay();
+    const result = await verifiedRunner(async () => researchAnswer())('q', { ...dep, ...PORTS });
+
+    expect(result.text).toBe('Jiffy jobs start at $129 [1].');
+    // `summary` is the model's own prose and only the POINTS were gated. Putting
+    // it on the wire would slip unchecked text into the mode whose whole promise
+    // is that nothing unchecked is shown.
+    expect(result.text).not.toContain('market leader');
+  });
+
+  it('carries the gate’s kept and refused claims into the stored payload', async () => {
+    const d = deps({ verifiedAnswer: verifiedRunner(async () => researchAnswer()) });
+    await runAnswerStream(recorder().sink, { ...ASK, mode: 'verified' }, d);
+
+    const answer = d.store.messages[1]?.answer;
+    expect(answer?.points).toHaveLength(1);
+    expect(answer?.dropped?.[0]?.why).toContain('no cited span');
+    expect(answer?.queries).toEqual(['jiffy pricing toronto']);
+  });
+
+  it('numbers one quote once even when two claims cite it', async () => {
+    const { events, deps: dep } = groundedRelay();
+    const span = 'Jobs start at $129 for a two-hour visit.';
+    await verifiedRunner(async () =>
+      researchAnswer({
+        points: [
+          { claim: 'Jiffy jobs start at $129.', citations: [{ url: DOC.url, span }] },
+          { claim: 'A visit is two hours.', citations: [{ url: DOC.url, span }] },
+        ],
+      }),
+    )('q', { ...dep, ...PORTS });
+
+    expect(events.filter((e) => e.event === 'span')).toHaveLength(1);
+  });
+
+  it('runs the per-sentence check rather than assuming the gate agreed with it', async () => {
+    // A figure with no span behind it must flag here even though `research()`
+    // handed the point over as kept — two gates under one badge is how a badge
+    // stops meaning anything. This also brings the causal lint, which
+    // `research()` has never run, to Verified mode.
+    const { events, deps: dep } = groundedRelay();
+    const result = await verifiedRunner(async () =>
+      researchAnswer({
+        points: [
+          { claim: 'Jiffy holds 40% of the market.', citations: [{ url: DOC.url, span: 'Jobs start at $129 for a two-hour visit.' }] },
+        ],
+      }),
+    )('q', { ...dep, ...PORTS });
+
+    const verdicts = events.filter((e) => e.event === 'sentence').map((e) => e.data as { verdict: string });
+    expect(verdicts.map((v) => v.verdict)).toEqual(['flagged']);
+    expect(result.flagged).toBe(1);
+  });
+
+  it('explains an empty verified answer in its own words, not the model’s', async () => {
+    const { deps: dep } = groundedRelay();
+    const result = await verifiedRunner(async () => researchAnswer({ points: [] }))('q', { ...dep, ...PORTS });
+
+    expect(result.text).toBe('');
+    // The stored body is this note. `summary` here reads as a confident,
+    // uncited answer — the "empty answer replayed as a lie" bug, restated.
+    expect(result.note).toContain('Verified mode kept nothing');
+    expect(result.note).not.toContain('market leader');
+  });
+});
+
+/* ── a grounded turn must not poison a later web follow-up ──────────────── */
+
+describe('historyFor — internal locators are not pages', () => {
+  it('carries only fetchable URLs forward, never a Brain path or a ledger row', () => {
+    const [turn] = historyFor(
+      detail([
+        msg({ body: 'What do we know about Jiffy?' }),
+        answered('Jiffy starts at $129 [1].', {
+          answer: {
+            points: [],
+            dropped: [],
+            unanswered: [],
+            sources: [
+              { url: 'https://jiffy.ca/pricing', title: 'p', text: 'x' },
+              { url: '60-business/PRICING_v3.md § Commission', title: 'b', text: 'y' },
+            ],
+            queries: [],
+          },
+          citations: [{ ...CITE, sourceUrl: 'finding · f-1' }],
+        }),
+      ]),
+    );
+    // The follow-up planner hands this list to the reader as pages to re-read.
+    // A locator would be fetched, fail, and spend a page of the run's budget.
+    expect(turn?.sourceUrls).toEqual(['https://jiffy.ca/pricing']);
   });
 });

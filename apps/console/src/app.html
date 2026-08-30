@@ -53,6 +53,11 @@
     /* hover is a wash, never a fill — the founder rule */
     --wash:#14120f0a;
     --brass-tint:#b8860b14;
+    /* The fill that says "ours". A wash alone survives light and vanishes in
+       dark — seen on the first dark-mode render of the grounded strip, where
+       the Brain cards were all but invisible beside their neighbours. It is a
+       FILL, not an accent: the brass stays reserved for citations. */
+    --ours-fill:#14120f0f;
     --shadow:0 1px 2px #14120f0a, 0 8px 24px #14120f0a;
   }
   @media (prefers-color-scheme:dark){
@@ -60,7 +65,7 @@
       --ground:#0e1114; --surface:#161a1e; --line:#272d33;
       --ink:#e7ebee; --muted:#939da5; --faint:#6c767e;
       --brass:#cba347; --hold:#5aa886; --moved:#d17b45;
-      --wash:#e7ebee12; --brass-tint:#cba34720;
+      --wash:#e7ebee12; --brass-tint:#cba34720; --ours-fill:#242c33;
       --shadow:0 1px 2px #0006, 0 8px 24px #0004;
     }
   }
@@ -195,6 +200,58 @@
   .src .ttl{font-size:12.5px;line-height:1.35;color:var(--ink);
             display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 
+  /* ── source KINDS ──────────────────────────────────────────────
+     COLOUR IS ALREADY SPOKEN FOR. Brass / orange / muted mean confirmed /
+     unconfirmed / stored, and hanging a second meaning on the same channel
+     makes both unreadable. So VERDICT keeps colour and KIND gets FORM —
+     reusing three conventions this file already established:
+
+       raised card, solid border   an outside page. You can open it.
+       inset wash, no border       ours. It sits INSIDE the page, not on it.
+       dashed                      not an observation (same as .blank, .drop).
+
+     Form alone is a language nobody was taught, so every one of them is
+     backed by a spelled-out label on the card, a glyph in the marker, and a
+     key above the prose. Three redundant channels, because the one thing this
+     mode must never do is let a forecast read like a measurement. */
+  .srcgroup + .srcgroup{margin-top:13px}
+  .srcgroup.bare > .eyebrow, .srcgroup.bare > .ghint{display:none}
+  .srcgroup > .eyebrow{display:block;margin-bottom:3px}
+  /* The caveat belongs to the GROUP, not to each card. Printed on every card
+     it became four copies of one sentence and pushed the answer off screen —
+     which is how a caveat stops being read. */
+  .ghint{display:block;font-size:11.5px;line-height:1.45;color:var(--faint);
+         margin:0 0 8px;max-width:64ch}
+  .src.k-world{border-left:2px solid var(--faint)}
+  .src.k-brain{background:var(--ours-fill);border-color:transparent}
+  .src.k-ledger{background:transparent;border-style:dashed}
+  /* No href, so no pointer, no hover-lift: the card must not promise a click
+     it cannot honour. */
+  .src.internal{cursor:default}
+  .src.internal:hover{background:var(--ours-fill);border-color:var(--line)}
+  .src.k-ledger:hover{border-color:var(--faint)}
+  .kmark{width:14px;height:14px;border-radius:3px;flex:none;display:grid;place-items:center;
+         background:var(--wash);color:var(--muted);font-family:var(--mono);font-size:9px;
+         line-height:1;font-weight:500}
+  .src.k-brain .kmark{background:var(--surface)}
+  .src .loc{font-family:var(--mono);font-size:10px;line-height:1.45;color:var(--muted);
+            overflow-wrap:anywhere;margin-top:5px}
+  .src .when{display:block;font-family:var(--mono);font-size:9px;letter-spacing:.09em;
+             text-transform:uppercase;color:var(--faint);margin-top:5px}
+  /* Says, in words, what the form is hinting. Never omitted. */
+  .src .cant{display:block;font-size:11px;line-height:1.45;color:var(--faint);margin-top:5px}
+  .src .copy{margin-top:7px;padding:2px 8px;font-family:var(--mono);font-size:9px;
+             letter-spacing:.09em;text-transform:uppercase;border-radius:6px}
+
+  /* the key. Only the rows for kinds actually on screen. */
+  .legend{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0 0 16px;padding:9px 12px;
+          border:1px dashed var(--line);border-radius:11px;background:var(--surface)}
+  .legend span{font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .legend i{font-style:normal;font-family:var(--mono);font-size:10px;color:var(--brass);
+            background:var(--brass-tint);border-radius:5px;padding:2px 5px;line-height:1}
+  .legend i.u{background:none;border-bottom:1px dotted var(--faint);border-radius:0;
+              color:var(--muted);padding:1px 2px}
+
   /* ── prose + citations ────────────────────────────────────────────────── */
   .prose{font-size:16px;line-height:1.72;max-width:66ch;overflow-wrap:anywhere}
   .sent{transition:background .25s ease}
@@ -213,6 +270,29 @@
   .cb.flagged{color:var(--moved);background:transparent;border-color:var(--moved);
               border-style:dotted}
   .cb:hover{filter:brightness(1.1);border-color:var(--brass)}
+  /* KIND on the marker itself. The glyph rides in front of the number and
+     inherits the verdict colour, so the two channels never fight. */
+  .cb .g{font-size:.86em;opacity:.72;margin-right:.5px}
+  /* `world` has a real URL and opens like a web source, so it keeps the web
+     shape — the dotted rule underneath is the whole difference: this is our
+     reading of their page on a date, not the page. */
+  .cb.k-world{border-bottom:1px dotted currentColor;border-radius:5px 5px 0 0}
+  .cb.k-brain{background:var(--ours-fill)}
+  .cb.k-brain.confirmed{background:var(--ours-fill)}
+  .cb.k-ledger{background:none;border-style:dashed;border-color:currentColor}
+  /* A sentence whose every citation is a forecast is the one sentence in this
+     interface that could pass for something we measured. It is labelled in
+     words, not decorated. */
+  .fx{font-style:normal;font-family:var(--mono);font-size:9px;letter-spacing:.11em;
+      text-transform:uppercase;color:var(--moved);border:1px solid var(--moved);
+      border-radius:5px;padding:1px 5px;margin-right:6px;vertical-align:2px;
+      white-space:nowrap}
+  /* WHY THE WHOLE SENTENCE IS WASHED, not just tagged. Rendered on its own the
+     tag sits a few pixels after the PREVIOUS sentence's full stop and reads as
+     if it labelled that one — seen on the first live render of the grounded
+     demo. The wash draws the boundary the prose does not have. */
+  .sent.fcast{background:var(--wash);border-radius:7px;padding:1px 6px 2px;
+              box-decoration-break:clone;-webkit-box-decoration-break:clone}
   .cursor{display:inline-block;width:7px;height:1em;vertical-align:-2px;margin-left:1px;
           background:var(--brass);opacity:.6;animation:blink .9s steps(2,start) infinite}
   @keyframes blink{50%{opacity:0}}
@@ -229,6 +309,10 @@
   .tip blockquote{margin:0 0 8px;padding:8px 11px;background:var(--ground);
                   border-left:2px solid var(--brass);border-radius:0 8px 8px 0;
                   font-size:12px;line-height:1.5;color:var(--muted)}
+  .tip .loc{font-family:var(--mono);font-size:10px;line-height:1.45;color:var(--muted);
+            overflow-wrap:anywhere;margin:-4px 0 8px}
+  .tip .when{display:block;font-family:var(--mono);font-size:9px;letter-spacing:.09em;
+             text-transform:uppercase;color:var(--faint);margin:-4px 0 8px}
   .tip .verdict{font-size:11.5px;line-height:1.45;color:var(--muted);
                 padding-top:7px;border-top:1px solid var(--line)}
   .tip .verdict b{font-weight:500;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
@@ -299,6 +383,7 @@
                  z-index:40;background:var(--surface);box-shadow:var(--shadow)}
     .col{padding:56px 18px 34px}
     .composer{padding:10px 18px 14px}
+    .modes button{padding:4px 8px;font-size:11px}
     .turn h2.q{font-size:20px}
     .prose{font-size:15.5px}
   }
@@ -323,7 +408,9 @@
     <div class="side-foot">
       <a href="/" title="The old dashboard">Classic console</a>
       <span class="eyebrow">·</span>
-      <a href="?demo=1" title="Replay a scripted run with no server">Demo</a>
+      <a href="?demo=1" title="Replay a scripted web run with no server">Demo</a>
+      <span class="eyebrow">·</span>
+      <a href="?demo=1&amp;mode=grounded" title="Replay a scripted grounded run — all four source kinds">Demo · grounded</a>
     </div>
   </aside>
 
@@ -336,15 +423,14 @@
     <section class="empty" id="empty">
       <div class="empty-in">
         <h2>Ask it anything.</h2>
-        <p class="sub">Every figure comes back with the exact sentence it came from,
+        <p class="sub" id="emptySub">Every figure comes back with the exact sentence it came from,
           on a page we actually fetched. What could not be sourced is listed, not smoothed over.</p>
         <div class="box" id="box0">
           <textarea id="q0" rows="1" placeholder="Ask about a market, a competitor, or a call you have to make…"></textarea>
-          <div class="modes" id="modes0">
-            <button data-mode="fast" aria-pressed="true" title="Streams as it writes; each sentence is checked a beat behind">Fast</button>
-            <button data-mode="verified" aria-pressed="false" disabled
-              title="Not wired yet — /api/answer takes only a question and a thread, so every run is Fast. Disabled rather than left as a toggle that silently does nothing.">Verified</button>
-          </div>
+          <!-- Built from MODES in the script: two pill groups that can drift
+               apart is how a toggle ends up meaning one thing at the top of a
+               page and another at the bottom. -->
+          <div class="modes" id="modes0" role="group" aria-label="Where to answer from"></div>
           <button class="primary go" id="go0" aria-label="Ask">→</button>
         </div>
         <div class="prompts" id="prompts"></div>
@@ -359,11 +445,7 @@
       <div class="col">
         <div class="box">
           <textarea id="q1" rows="1" placeholder="Ask a follow-up…"></textarea>
-          <div class="modes" id="modes1">
-            <button data-mode="fast" aria-pressed="true">Fast</button>
-            <button data-mode="verified" aria-pressed="false" disabled
-              title="Not wired yet — every run is Fast.">Verified</button>
-          </div>
+          <div class="modes" id="modes1" role="group" aria-label="Where to answer from"></div>
           <button class="primary go" id="go1" aria-label="Ask">→</button>
         </div>
       </div>
@@ -422,6 +504,171 @@ const PHASE_LABEL = {
   done: 'Done',
 };
 
+/* Grounded reads nothing from the open web, so "Searching…" beside a status
+   line is a small lie about where the answer is coming from. Only the phases
+   that change are overridden.
+
+   THESE ARE EARNED, NOT ASSUMED — and a live run is what showed the
+   difference. `mode=grounded` went to a route that does not know the
+   parameter, which dropped it and ran a normal web search; the status line
+   sat on "Reading our own records…" for forty seconds while the server read
+   Wikipedia and four pages about a lawn-care company also called Jiffy. The
+   pill said Grounded, so the interface said Grounded, and neither had any
+   evidence for it. So these labels appear only after a source has arrived
+   that is not a web page. Until then the neutral wording stands. */
+const PHASE_LABEL_GROUNDED = {
+  planning: 'Planning what to look up…',
+  searching: 'Searching our own records…',
+  reading: 'Reading our own records…',
+  attributing: 'Finding quotable passages…',
+};
+
+function phaseLabel(turn, phase) {
+  const earned = turn && turn.mode === 'grounded' &&
+                 turn.sources.some((r) => r.kind !== 'web');
+  if (earned && PHASE_LABEL_GROUNDED[phase]) return PHASE_LABEL_GROUNDED[phase];
+  return PHASE_LABEL[phase] || phase || 'Working…';
+}
+
+/* ══ modes ═════════════════════════════════════════════════════════════════
+
+   Web · Grounded · Verified. One table, both pill groups, so the toggle
+   cannot mean one thing at the top of the page and another at the bottom.
+
+   `param` is what rides in the query string, and all three are real: read
+   against `answer-route.ts` at 2026-08-31, `parseMode` accepts
+   `web | grounded | verified` and treats anything else as `web`, and
+   `server.ts` passes it through. So the pill sends its own name rather than
+   relying on a default.
+
+   VERIFIED IS ON, because it now runs: `VERIFIED_ANSWER = verifiedRunner(research)`
+   is wired into the route's deps, which is the strict whole-answer gate §2
+   promised and the console could not reach until today. It stays a second
+   click rather than the default — it is slower, and it is the right tool when
+   the answer feeds a pricing or positioning call.
+
+   GROUNDED IS HALF-WIRED, and the toggle says so rather than hiding it.
+   Retrieval is real — the route emits genuine world / brain / ledger source
+   events — but `GROUNDED_ANSWER` is still a seam that REFUSES rather than
+   writing prose it cannot cite. So a grounded run today shows its evidence and
+   then stops with that refusal, which is a true picture of where the feature
+   is. Offering it is more honest than hiding it: the evidence half is exactly
+   what a reader needs to judge whether the mode is worth finishing.
+
+   Either way the answer is checked on the way back — `renderModeNote` looks at
+   what actually arrived, because a mode that is silently ignored is worse than
+   one that is refused. */
+const MODES = {
+  web: {
+    label: 'Web',
+    param: 'web',
+    enabled: true,
+    title: 'Answers from pages fetched off the open web this run. Streams as it writes; each sentence is checked a beat behind.',
+    sub: 'Every figure comes back with the exact sentence it came from, on a page we actually fetched. ' +
+         'What could not be sourced is listed, not smoothed over.',
+    placeholder: 'Ask about a market, a competitor, or a call you have to make…',
+  },
+  grounded: {
+    label: 'Grounded',
+    param: 'grounded',
+    enabled: true,
+    title: 'Answers from OUR evidence only — competitor facts we read off their pages, our own documents, and the prediction ledger. No web search. ' +
+           'Half-built today: the evidence is retrieved and shown, then the run stops rather than writing prose it cannot cite.',
+    sub: 'Answers from our own evidence: what we read off a competitor’s page and when, what we have written down, ' +
+         'and what we have forecast. Each is marked as what it is — none of them is the open web.',
+    placeholder: 'Ask what we know, what we have decided, or what we expect…',
+  },
+  verified: {
+    label: 'Verified',
+    param: 'verified',
+    enabled: true,
+    title: 'The strict gate: nothing is shown until the whole answer has passed a verbatim check. Slower, and the right tool when the answer feeds a decision.',
+    sub: 'Nothing is shown until the whole answer has passed the verbatim gate. Slower than Web, and what the claims it drops ' +
+         'are listed for. Use it when the answer feeds a pricing or positioning call.',
+    placeholder: 'Ask something the answer has to be right about…',
+  },
+};
+
+const MODE_ORDER = ['web', 'grounded', 'verified'];
+
+/** Stored answers carry the pipeline's own name for the default mode. */
+const normalizeMode = (m) => {
+  const v = String(m || '');
+  if (v === 'fast' || v === '') return 'web';
+  return MODES[v] ? v : 'web';
+};
+
+/* ══ source kinds ══════════════════════════════════════════════════════════
+
+   Four kinds, and the ONLY thing that matters about them is what a reader can
+   do to check one. A web page opens in a tab. A competitor fact opens their
+   page — but the fact is our reading of it on a date, and their page today
+   may say something else. A Brain passage opens nothing: it is us citing
+   ourselves. A ledger row is not an observation at all.
+
+   `linkable` is load-bearing beyond styling. A Brain locator like
+   `taskly-brain/…/PRICING_v3.md § Commission` resolves against location.href
+   into a perfectly valid http URL, so `safeUrl()` would hand back
+   `http://127.0.0.1:4478/taskly-brain/…` and the card would render as a live
+   link to a 404. An internal locator therefore never reaches safeUrl at all. */
+const KIND = {
+  web: {
+    group: 'From the open web',
+    hint: '',
+    one: 'web page', many: 'web pages',
+    mark: '↗',                 // north-east arrow: it opens
+    origin: '',                     // a hostname is its own origin
+    linkable: true,
+  },
+  world: {
+    group: 'Competitor pages, as we read them',
+    hint: 'What their page said on the date we read it — our observation, not the page. ' +
+          'The link opens their page as it stands today, which may differ.',
+    one: 'competitor page', many: 'competitor pages',
+    mark: '◉',                 // fisheye: an observation
+    origin: '',
+    linkable: true,
+  },
+  brain: {
+    group: 'Our own documents',
+    hint: 'Ours. Not links — these are documents in our own vault, so this is us citing ourselves. ' +
+          'Nothing outside Taskly says them.',
+    one: 'document of ours', many: 'documents of ours',
+    mark: '§',                 // section mark: a document and a section
+    origin: 'taskly brain',
+    linkable: false,
+  },
+  ledger: {
+    group: 'Forecasts we recorded',
+    hint: 'What we expect, at some probability, written down before the fact. Not measurements, ' +
+          'and not things that have happened.',
+    one: 'forecast', many: 'forecasts',
+    mark: '~',                      // approximately: not measured
+    origin: 'prediction ledger',
+    linkable: false,
+  },
+};
+
+const KIND_ORDER = ['web', 'world', 'brain', 'ledger'];
+
+/** The contract: an absent `kind` means `web` — every source emitted before
+ *  2026-08-31 was one. Anything unrecognised is treated the same way, which
+ *  is the conservative reading: it gets the kind with the weakest claim. */
+const kindOf = (k) => (KIND[String(k || '')] ? String(k) : 'web');
+
+const INTERNAL = { brain: true, ledger: true };
+
+/** A date, or an honest admission that there is not one. Absence matters:
+ *  a competitor fact from June and one from today are not equal evidence, so
+ *  a missing date is printed, never quietly dropped. */
+function whenText(iso) {
+  const raw = String(iso || '').trim();
+  if (raw === '') return null;
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return raw;
+  return d.toLocaleDateString('en-CA', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
 let toastTimer = 0;
 function toast(msg) {
   const t = $('#toast');
@@ -438,15 +685,20 @@ function toast(msg) {
  * the nodes that changed. No diffing, no re-render of the answer — the whole
  * reason this is not `ui.html`.
  */
+const QS = new URLSearchParams(location.search);
+
 const S = {
-  mode: 'fast',
+  // `?mode=grounded` presets the pill, so a link can carry the mode as well as
+  // the question — and so the grounded demo is one href, not a click.
+  mode: (MODES[String(QS.get('mode') || '')] && MODES[String(QS.get('mode'))].enabled)
+    ? String(QS.get('mode')) : 'web',
   threadId: null,
   threads: [],
   turns: [],          // Turn[] — one per question asked in this thread
   live: null,         // the Turn currently streaming, or null
   es: null,           // EventSource
-  demo: new URLSearchParams(location.search).get('demo') === '1',
-  endpoint: new URLSearchParams(location.search).get('api') || '/api/answer',
+  demo: QS.get('demo') === '1',
+  endpoint: QS.get('api') || '/api/answer',
   demoTimers: [],
 };
 
@@ -460,16 +712,18 @@ function newTurn(question) {
     id: 't' + Math.random().toString(36).slice(2, 9),
     question,
     steps: [],          // {phase, detail}
-    sources: [],        // SourceEvent
+    sources: [],        // SourceEvent, normalised — see onSource
+    groups: new Map(),  // kind -> {sec, grid} in the source strip
     spans: new Map(),   // id -> SpanEvent
     sentences: new Map(), // n -> sentence record
     order: [],          // sentence indices, in creation order
     phase: '',
     phaseDetail: '',
-    // Which pipeline wrote it. A fast run has no claim-level drop stage at all,
-    // and saying "nothing was dropped" about a stage that does not exist is the
-    // kind of quiet over-claim the refusals card exists to prevent.
-    mode: 'fast',
+    // Which pipeline wrote it. Neither web nor grounded has a claim-level drop
+    // stage at all, and saying "nothing was dropped" about a stage that does
+    // not exist is the kind of quiet over-claim the refusals card exists to
+    // prevent. It also decides how the sources are framed.
+    mode: 'web',
     // Fork needs (thread, seq). `done` carries a messageId, not a seq, so the
     // seq is resolved from the thread transcript at fork time — see forkTurn.
     threadId: null,
@@ -484,21 +738,69 @@ function newTurn(question) {
 
 /* ══ chrome ════════════════════════════════════════════════════════════════ */
 
-const SUGGESTED = [
-  'Should we run a snow-removal campaign in Toronto this October?',
-  'What are Jiffy and TaskRabbit charging homeowners in the GTA right now?',
-  'Which home-services category has the least competition in Toronto?',
-  'What changed on our competitors’ pricing pages this month?',
-];
+/* Two sets, because the good question for each mode is a different question.
+   Offering "what changed on their pricing page" under Grounded would send the
+   reader at the one thing grounded mode cannot do, and vice versa. */
+const SUGGESTED = {
+  web: [
+    'Should we run a snow-removal campaign in Toronto this October?',
+    'What are Jiffy and TaskRabbit charging homeowners in the GTA right now?',
+    'Which home-services category has the least competition in Toronto?',
+    'What changed on our competitors’ pricing pages this month?',
+  ],
+  grounded: [
+    'What do we know about Jiffy?',
+    'What is our commission rate?',
+    'What have we decided about the poster platform fee?',
+    'What did we forecast about competitor pricing this quarter?',
+  ],
+};
+SUGGESTED.verified = SUGGESTED.web;
 
-(function mountPrompts() {
+function mountPrompts() {
   const wrap = $('#prompts');
-  for (const p of SUGGESTED) {
+  wrap.replaceChildren();
+  for (const p of (SUGGESTED[S.mode] || SUGGESTED.web)) {
     const b = el('button', 'prompt', p);
     b.addEventListener('click', () => { $('#q0').value = p; submit(p); });
     wrap.appendChild(b);
   }
-})();
+}
+
+/* ── the pills ────────────────────────────────────────────────────────────
+   Rendered from MODES into both groups. A disabled pill keeps its title, so
+   hovering "Verified" says why it is off rather than leaving a dead control. */
+function mountModes() {
+  for (const id of ['#modes0', '#modes1']) {
+    const wrap = $(id);
+    wrap.replaceChildren();
+    for (const key of MODE_ORDER) {
+      const m = MODES[key];
+      const b = el('button', null, m.label);
+      b.dataset.mode = key;
+      b.type = 'button';
+      b.title = m.title;
+      b.setAttribute('aria-pressed', String(key === S.mode));
+      if (!m.enabled) b.disabled = true;
+      wrap.appendChild(b);
+    }
+  }
+}
+
+function setMode(key) {
+  if (!MODES[key] || !MODES[key].enabled) return;
+  S.mode = key;
+  for (const b of document.querySelectorAll('.modes button')) {
+    b.setAttribute('aria-pressed', String(b.dataset.mode === S.mode));
+  }
+  const sub = $('#emptySub');
+  if (sub && MODES[key].sub) sub.textContent = MODES[key].sub;
+  $('#q0').placeholder = MODES[key].placeholder || $('#q0').placeholder;
+  mountPrompts();
+}
+
+mountModes();
+setMode(S.mode);
 
 function bindBox(taInput, goBtn, modesId) {
   const ta = $(taInput);
@@ -510,11 +812,7 @@ function bindBox(taInput, goBtn, modesId) {
   $(goBtn).addEventListener('click', () => { submit(ta.value); ta.value = ''; grow(); });
   $(modesId).addEventListener('click', (e) => {
     const b = e.target.closest('button[data-mode]');
-    if (!b) return;
-    S.mode = b.dataset.mode;
-    for (const m of document.querySelectorAll('.modes button')) {
-      m.setAttribute('aria-pressed', String(m.dataset.mode === S.mode));
-    }
+    if (b) setMode(b.dataset.mode);
   });
 }
 bindBox('#q0', '#go0', '#modes0');
@@ -550,6 +848,16 @@ if (S.demo) {
     document.createTextNode('Demo — scripted events, no server, no spend'),
     el('span', 'spacer'),
   );
+  // Which script is about to run matters: the grounded one is the only place
+  // the world / brain / ledger cards can be seen until the route supports them.
+  const which = el('span', null, '');
+  which.style.cssText = 'font-family:var(--mono);font-size:10px;letter-spacing:.1em';
+  const paintWhich = () => { which.textContent = S.mode === 'grounded' ? 'grounded script' : 'web script'; };
+  paintWhich();
+  b.insertBefore(which, b.querySelector('.spacer'));
+  for (const btn of document.querySelectorAll('.modes button')) {
+    btn.addEventListener('click', paintWhich);
+  }
   const leave = el('button', null, 'Leave demo');
   leave.style.cssText = 'font-size:11px;padding:3px 10px';
   leave.addEventListener('click', () => { location.search = ''; });
@@ -693,8 +1001,12 @@ function replayThread(detail) {
                        title: (c && c.title) || domainOf(url, url) });
       return order.length;
     };
+    // Forwarded when the store kept them. A grounded answer replayed without
+    // `kind` degrades to web cards — wrong label, but never a false link: a
+    // locator that is not http(s) fails safeUrl and the card renders unclickable.
     for (const d of docs) { order.push(String(d.url)); onSource(turn, {
-      i: order.length, url: d.url, domain: domainOf(d.url, ''), title: d.title }); }
+      i: order.length, url: d.url, domain: d.domain || domainOf(d.url, ''), title: d.title,
+      kind: d.kind, observedAt: d.observedAt }); }
     for (const c of cites) {
       onSpan(turn, { id: Number(c.ordinal), sourceIndex: indexOf(String(c.sourceUrl)),
                      quote: String(c.span ?? '') });
@@ -714,7 +1026,7 @@ function replayThread(detail) {
     // second convention for the replay path.
     if (!isNote) feedDelta(turn, 0, body);
     markStored(turn);
-    turn.mode = String(m.mode || 'fast');
+    turn.mode = normalizeMode(m.mode);
     // Fork needs the seq, and a replayed turn has it for free — no lookup.
     turn.seq = Number.isFinite(Number(m.seq)) ? Number(m.seq) : null;
     turn.messageId = m.id ?? null;
@@ -745,8 +1057,9 @@ function markStored(turn) {
     for (const b of s.badges) {
       b.classList.remove('pending');
       b.classList.add('stored');
-      b.setAttribute('aria-label', 'Citation ' + b.dataset.span + ', from a saved answer');
+      paintBadgeKind(turn, b);
     }
+    markForecastSentence(turn, s);
   }
 }
 
@@ -779,9 +1092,22 @@ function buildTurn(turn) {
   const sources = el('section', 'sources hidden');
   const shead = el('div', 'srchead');
   shead.append(el('span', 'eyebrow', 'Sources'), el('span', 'eyebrow srccount', ''));
-  const sgrid = el('div', 'srcgrid');
-  sources.append(shead, sgrid);
+  // Groups, not one flat grid. Grouping IS the at-a-glance cue: before a word
+  // of prose you can see that half this answer rests on documents we wrote.
+  // With a single kind on screen the group label is hidden, so a web run looks
+  // exactly as it did.
+  const sgroups = el('div', 'srcgroups');
+  sources.append(shead, sgroups);
   root.appendChild(sources);
+
+  // Shown only when the run asked for grounded and came back all-web. A mode
+  // that is silently ignored is worse than one that is refused.
+  const modenote = el('div', 'blank hidden');
+  root.appendChild(modenote);
+
+  // The key to the marker glyphs. Only the kinds actually on screen.
+  const legend = el('div', 'legend hidden');
+  root.appendChild(legend);
 
   /* prose */
   const prose = el('div', 'prose');
@@ -805,7 +1131,7 @@ function buildTurn(turn) {
   const actions = el('div', 'actions hidden');
   root.appendChild(actions);
 
-  turn.els = { root, live, phase, detail, toggle, steps, sources, sgrid,
+  turn.els = { root, live, phase, detail, toggle, steps, sources, sgroups, modenote, legend,
                scount: shead.lastChild, prose, cursor, blank, err, refusals, related, actions };
   return root;
 }
@@ -829,13 +1155,13 @@ function onStatus(turn, ev) {
   turn.steps.push({ phase, detail });
   turn.phase = phase;
   turn.phaseDetail = detail;
-  turn.els.phase.textContent = PHASE_LABEL[phase] || phase || 'Working…';
+  turn.els.phase.textContent = phaseLabel(turn, phase);
   paintDetail(turn);
   const li = el('li');
   // The one place markup is built from a string rather than nodes. `detail`
   // carries a search query the model wrote, so it goes through esc() — same
   // guard, same shape as ui.html.
-  li.innerHTML = '<b>' + esc(phase) + '</b>' + esc(detail || PHASE_LABEL[phase] || phase);
+  li.innerHTML = '<b>' + esc(phase) + '</b>' + esc(detail || phaseLabel(turn, phase));
   turn.els.steps.appendChild(li);
 }
 
@@ -856,30 +1182,216 @@ function paintDetail(turn) {
   turn.els.detail.title = line;
 }
 
+/**
+ * A SOURCE CARD IS A PROMISE ABOUT WHAT THE READER CAN DO NEXT.
+ *
+ * Four kinds arrive on the same event and only one of them opens in a tab.
+ * The failure this function exists to prevent is four uniform cards: a Brain
+ * passage rendered like a web page tells the reader they can go and check it,
+ * and they cannot — nothing outside Taskly says it. Flattening them is the
+ * single easiest way to throw away everything grounded mode is worth.
+ *
+ * So each kind gets its own card shape, its own words, and — for the two that
+ * cannot be opened — no anchor at all. See KIND for why `linkable` is not
+ * merely cosmetic.
+ */
 function onSource(turn, ev) {
   const i = Number(ev && ev.i) || (turn.sources.length + 1);
-  const url = safeUrl(ev && ev.url);
-  const domain = String((ev && ev.domain) || domainOf(url, ''));
-  const title = String((ev && ev.title) || domain || 'Untitled');
-  const rec = { i, url, domain, title };
+  const kind = kindOf(ev && ev.kind);
+  const linkable = KIND[kind].linkable;
+  // An internal locator NEVER reaches safeUrl: it would resolve against the
+  // page origin and come back a valid http URL to a 404.
+  const url = linkable ? safeUrl(ev && ev.url) : null;
+  const locator = linkable ? '' : String((ev && ev.url) || '');
+  const domain = String((ev && ev.domain) || (linkable ? domainOf(url, '') : KIND[kind].origin));
+  const title = String((ev && ev.title) || domain || locator || 'Untitled');
+  const observedAt = ev && ev.observedAt ? String(ev.observedAt) : '';
+  const part = splitLocator(linkable ? '' : String((ev && ev.url) || ''));
+  const rec = { i, kind, url, locator, domain, title, observedAt,
+                path: part.path, section: part.section };
   turn.sources.push(rec);
 
-  const card = el('a', 'src');
+  const internal = INTERNAL[kind] === true;
+  const card = el(url ? 'a' : 'div', 'src k-' + kind + (internal ? ' internal' : ''));
   if (url) { card.href = url; card.target = '_blank'; card.rel = 'noreferrer noopener'; }
-  const top = el('div', 'top');
-  top.appendChild(favicon(domain));
-  top.appendChild(el('span', 'dom', domain));
-  top.appendChild(el('span', 'num', String(i)));
-  card.append(top, el('div', 'ttl', title));
-  turn.els.sgrid.appendChild(card);
 
+  const top = el('div', 'top');
+  // A favicon is a claim that there is a site. Only web gets one — asking
+  // Google for the favicon of "taskly brain" would also hand a third party the
+  // name of an internal record for nothing.
+  top.appendChild(kind === 'web' ? favicon(domain) : kindMark(kind));
+  top.appendChild(el('span', 'dom', internal ? KIND[kind].origin : domain));
+  top.appendChild(el('span', 'num', String(i)));
+  // WHAT A LIVE RUN SHOWED AND A FIXTURE COULD NOT. A real Brain locator is
+  //   70-decisions/ADR-005-two-sided-fee-model.md
+  //     § 70-decisions/ADR-005-two-sided-fee-model.md › ADR-005 — Two-sided take…
+  // and `title` is the path again — so the first cut printed the path three
+  // times and the heading, the one human-readable part, was buried at the end
+  // of a wrapped mono block.
+  //
+  // This SPLITS that string for display; it never edits it. The path goes on
+  // its own line, the heading trail becomes the card's title, and the only
+  // characters not shown are the literal repeat of the path. `Copy path` still
+  // copies the locator exactly as it arrived.
+  card.appendChild(top);
+  const headline = part.section || (part.path === title.trim() ? '' : title);
+  if (headline) card.appendChild(el('div', 'ttl', headline));
+
+  if (!internal && url === null) {
+    card.appendChild(el('span', 'cant',
+      'No openable URL came with this source, so there is nothing to click through to.'));
+  }
+
+  if (kind === 'world') {
+    // The link goes to their page as it is NOW. What we are citing is what it
+    // said on the day we read it, and those are not the same thing.
+    const when = whenText(observedAt);
+    card.appendChild(el('span', 'when', when ? 'Read on ' + when : 'Read — no date recorded'));
+    // Only the exception is per-card: a fact with no date is weaker than one
+    // with a stale date, and the group hint cannot say that about one card.
+    if (!when) card.appendChild(el('span', 'cant',
+      'No date came with this one, so how current it is cannot be told from here.'));
+    card.title = 'Our observation of ' + domain + (when ? ' on ' + when : '') +
+      '. Opens their page as it stands today.';
+  } else if (kind === 'brain') {
+    if (part.path) card.appendChild(el('div', 'loc', part.path));
+    if (locator) card.appendChild(copyLocator(locator, 'Copy path'));
+  } else if (kind === 'ledger') {
+    if (part.path) card.appendChild(el('div', 'loc', part.path));
+    const when = whenText(observedAt);
+    card.appendChild(el('span', 'when', when ? 'Recorded ' + when : 'Recorded — no date noted'));
+    if (locator) card.appendChild(copyLocator(locator, 'Copy row'));
+  }
+
+  gridFor(turn, kind).appendChild(card);
   turn.els.sources.classList.remove('hidden');
-  turn.els.scount.textContent = String(turn.sources.length);
+  // The first non-web source is what earns the grounded wording, so the live
+  // line is repainted the moment one lands.
+  if (turn.mode === 'grounded' && kind !== 'web' && turn.phase) {
+    turn.els.phase.textContent = phaseLabel(turn, turn.phase);
+  }
+  paintSourceCount(turn);
+  paintLegend(turn);
   paintDetail(turn);
 
   // Staggered, capped: eight sources should not take a second to appear.
   const delay = Math.min(turn.sources.length - 1, 9) * 55;
   setTimeout(() => card.classList.add('in'), 20 + delay);
+}
+
+/**
+ * A locator, split for display into the document and the place inside it.
+ *
+ * Presentation only. Nothing is rewritten and nothing is inferred: the two
+ * halves are the exact substrings either side of the first ` § `, and the one
+ * thing dropped is the path where the route repeats it at the head of the
+ * section trail. A locator with no ` § ` — a ledger row — comes back whole.
+ */
+function splitLocator(locator) {
+  const raw = String(locator || '');
+  const at = raw.indexOf(' § ');
+  if (at === -1) return { path: raw, section: '' };
+  const path = raw.slice(0, at);
+  let section = raw.slice(at + 3);
+  if (section.startsWith(path)) section = section.slice(path.length).replace(/^\s*›\s*/, '');
+  return { path, section: section.trim() };
+}
+
+/** The glyph that stands where a favicon would. Same 14px box, so a mixed
+ *  strip stays on one grid. */
+function kindMark(kind) {
+  const n = el('span', 'kmark', KIND[kind].mark);
+  n.setAttribute('aria-hidden', 'true');
+  return n;
+}
+
+/** An internal source cannot be opened, so it gets the one thing it CAN
+ *  offer: the locator, in your clipboard, ready to paste into the vault. */
+function copyLocator(locator, label) {
+  const b = el('button', 'copy', label);
+  b.type = 'button';
+  b.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    copyText(locator, 'Copied — ' + locator);
+  });
+  return b;
+}
+
+/**
+ * Groups appear in KIND_ORDER regardless of arrival order, because the order
+ * is itself information: what the open web said, then what we saw on their
+ * page, then what we wrote, then what we guessed. Weakest-to-ours, ending on
+ * the thing that is not evidence at all.
+ */
+function gridFor(turn, kind) {
+  const have = turn.groups.get(kind);
+  if (have) return have.grid;
+
+  const sec = el('section', 'srcgroup');
+  sec.dataset.kind = kind;
+  const lab = el('span', 'eyebrow', KIND[kind].group);
+  const grid = el('div', 'srcgrid');
+  sec.append(lab);
+  if (KIND[kind].hint) sec.appendChild(el('span', 'ghint', KIND[kind].hint));
+  sec.appendChild(grid);
+
+  const at = KIND_ORDER.indexOf(kind);
+  let before = null;
+  for (const k of KIND_ORDER.slice(at + 1)) {
+    const g = turn.groups.get(k);
+    if (g) { before = g.sec; break; }
+  }
+  turn.els.sgroups.insertBefore(sec, before);
+  turn.groups.set(kind, { sec, grid, lab });
+
+  // A strip that is nothing but web pages needs no headings — that is a web
+  // run, and it should look exactly as it did before grounded mode existed.
+  // Any other single kind KEEPS its heading, because the heading is where the
+  // "these cannot be opened" caveat now lives.
+  const webOnly = turn.groups.size === 1 && turn.groups.has('web');
+  for (const g of turn.groups.values()) g.sec.classList.toggle('bare', webOnly);
+  return grid;
+}
+
+/** The count line carries the MIX, not just the total. "7 sources" over an
+ *  answer that is five of our own documents is a true number telling a false
+ *  story. */
+function paintSourceCount(turn) {
+  const counts = new Map();
+  for (const r of turn.sources) counts.set(r.kind, (counts.get(r.kind) || 0) + 1);
+  if (counts.size < 2) { turn.els.scount.textContent = String(turn.sources.length); return; }
+  const bits = KIND_ORDER.filter((k) => counts.get(k)).map((k) => {
+    const n = counts.get(k);
+    return n + ' ' + (n === 1 ? KIND[k].one : KIND[k].many);
+  });
+  turn.els.scount.textContent = turn.sources.length + ' · ' + bits.join(' · ');
+}
+
+/** A form language nobody was taught is decoration. The key names every glyph
+ *  actually on screen, and nothing else. */
+function paintLegend(turn) {
+  const kinds = new Set(turn.sources.map((r) => r.kind));
+  const box = turn.els.legend;
+  box.replaceChildren();
+  if (kinds.size < 2 && !kinds.has('brain') && !kinds.has('ledger') && !kinds.has('world')) {
+    box.classList.add('hidden');
+    return;
+  }
+  const row = (glyph, cls, text) => {
+    const n = el('span');
+    n.appendChild(el('i', cls, glyph));
+    n.appendChild(document.createTextNode(text));
+    box.appendChild(n);
+  };
+  // `n`, not a digit. The first cut used 1 / 2 / §3 / ~4 and a live run put the
+  // key directly under a five-card strip, where "§3" read as a pointer at
+  // source 3 rather than as the shape of any brain marker.
+  if (kinds.has('web')) row('n', null, 'a page off the open web — opens');
+  if (kinds.has('world')) row('n', 'u', 'a competitor’s page, as we read it on a date — opens');
+  if (kinds.has('brain')) row('§n', null, 'a document we wrote — no link, we are citing ourselves');
+  if (kinds.has('ledger')) row('~n', null, 'a forecast — what we expect, never what we measured');
+  box.classList.remove('hidden');
 }
 
 /** Favicon, with a CSS-drawn monogram when the fetch fails (or is blocked). */
@@ -1004,9 +1516,85 @@ function addBadge(turn, s, id) {
   b.dataset.n = String(s.n);
   b.tabIndex = 0;
   b.setAttribute('role', 'button');
-  b.setAttribute('aria-label', 'Citation ' + id + ', checking');
   s.badges.push(b);
   s.node.appendChild(b);
+  paintBadgeKind(turn, b);
+}
+
+/* ── kind, on the marker ──────────────────────────────────────────────────
+   The strip tells you what this answer rests on. The marker has to tell you
+   what THIS SENTENCE rests on, or the reader has to scroll up and count.
+
+   The glyph inherits the verdict colour rather than introducing one, so the
+   two channels never collide: colour still means confirmed / unconfirmed /
+   stored, and form still means where it came from. */
+
+function sourceForSpan(turn, id) {
+  const span = turn.spans.get(Number(id));
+  if (!span) return null;
+  return turn.sources.find((x) => x.i === span.sourceIndex) || null;
+}
+
+const KIND_SAYS = {
+  web: 'from a web page',
+  world: 'from a competitor’s page as we read it',
+  brain: 'from a document we wrote',
+  ledger: 'from a forecast, not a measurement',
+};
+
+const VERDICT_SAYS = {
+  pending: 'checking',
+  confirmed: 'confirmed',
+  flagged: 'could not be confirmed',
+  stored: 'from a saved answer',
+};
+
+function paintBadgeKind(turn, b) {
+  const src = sourceForSpan(turn, b.dataset.span);
+  const sent = turn.sentences.get(Number(b.dataset.n));
+  const verdict = sent ? sent.verdict : 'pending';
+  // A span can arrive after the marker it numbers. Until it does the badge is
+  // simply un-kinded — never guessed at.
+  if (src && b.dataset.kind !== src.kind) {
+    b.dataset.kind = src.kind;
+    for (const k of KIND_ORDER) b.classList.toggle('k-' + k, k === src.kind);
+    const mark = (src.kind === 'brain' || src.kind === 'ledger') ? KIND[src.kind].mark : '';
+    let g = b.querySelector('.g');
+    if (mark === '') { if (g) g.remove(); }
+    else if (g) { g.textContent = mark; }
+    else {
+      g = el('i', 'g', mark);
+      g.setAttribute('aria-hidden', 'true');
+      b.insertBefore(g, b.firstChild);
+    }
+  }
+  b.setAttribute('aria-label', 'Citation ' + b.dataset.span +
+    (src ? ', ' + KIND_SAYS[src.kind] : '') + ', ' + VERDICT_SAYS[verdict]);
+}
+
+/**
+ * A SENTENCE THAT IS ENTIRELY FORECAST IS THE ONE THAT CAN PASS FOR A FINDING.
+ *
+ * Every other mixed case has at least one observation holding it up. A
+ * sentence citing only ledger rows is a statement about a future that has not
+ * happened, written in the same voice as the rest of the answer — so it is
+ * labelled in words at the head of the sentence, not decorated and left for
+ * the reader to decode.
+ */
+function markForecastSentence(turn, sent) {
+  if (!sent || !sent.badges.length) return;
+  const kinds = sent.badges.map((b) => b.dataset.kind || '');
+  const all = kinds.every((k) => k === 'ledger');
+  const has = sent.node.firstChild && sent.node.firstChild.classList &&
+              sent.node.firstChild.classList.contains('fx');
+  sent.node.classList.toggle('fcast', all);
+  if (all && !has) {
+    const tag = el('i', 'fx', 'forecast');
+    tag.title = 'Every citation in this sentence is a forecast we recorded. Nothing here was measured.';
+    sent.node.insertBefore(tag, sent.node.firstChild);
+  } else if (!all && has) {
+    sent.node.firstChild.remove();
+  }
 }
 
 /**
@@ -1028,9 +1616,9 @@ function onVerdict(turn, ev) {
   for (const b of s.badges) {
     b.classList.remove('pending');
     b.classList.add(v);
-    b.setAttribute('aria-label', 'Citation ' + b.dataset.span + ', ' +
-      (v === 'flagged' ? 'could not be confirmed' : 'confirmed'));
+    paintBadgeKind(turn, b);
   }
+  markForecastSentence(turn, s);
 }
 
 function showError(turn, msg) {
@@ -1120,6 +1708,7 @@ function finishTurn(turn, done) {
   if (full && full.messageId) turn.messageId = String(full.messageId);
 
   renderBlank(turn, full);
+  renderModeNote(turn);
   renderRefusals(turn, full);
   renderRelated(turn, full);
   renderActions(turn, full);
@@ -1161,6 +1750,36 @@ function renderBlank(turn, done) {
       ? note
       : 'The documents this run read carried nothing quotable for that question. ' +
         'Nothing is being withheld — there was no sourced sentence to write.'),
+  );
+  box.classList.remove('hidden');
+}
+
+/**
+ * A MODE THAT IS SILENTLY IGNORED IS WORSE THAN ONE THAT IS REFUSED.
+ *
+ * `mode=grounded` is a query parameter, and a route that does not know it
+ * drops it and answers off the web anyway. The reader gets a normal-looking
+ * answer under a pill that says Grounded, which is the interface lying about
+ * where its evidence came from.
+ *
+ * There is no capability endpoint to ask, and probing costs a paid run, so
+ * this is decided from the answer itself: a grounded run whose every source
+ * came back `web` did not run grounded. Said plainly, above the answer.
+ */
+function renderModeNote(turn) {
+  const box = turn.els.modenote;
+  box.replaceChildren();
+  const internalish = turn.sources.some((r) => r.kind !== 'web');
+  if (turn.mode !== 'grounded' || turn.errored || turn.sources.length === 0 || internalish) {
+    box.classList.add('hidden');
+    return;
+  }
+  box.append(
+    el('b', null, 'Asked in grounded mode — answered from the web'),
+    document.createTextNode(
+      'Every source that came back is an open-web page, with no competitor observation, ' +
+      'no document of ours and no ledger row among them. This server has not wired grounded ' +
+      'mode up yet, so read the answer as a Web answer. Nothing below is from our own evidence.'),
   );
   box.classList.remove('hidden');
 }
@@ -1254,8 +1873,10 @@ function renderRefusals(turn, done) {
     // and then withdrawn. Printing "nothing was dropped" about a stage that
     // does not exist reads as a gate that ran clean. It did not run.
     g2.appendChild(el('div', 'none',
-      turn.mode === 'fast'
-        ? 'No drop stage on a fast run — every span is proven verbatim before the prose is written, so a claim is never written and then withdrawn. The drop list belongs to Verified mode.'
+      turn.mode !== 'verified'
+        ? 'No drop stage on a ' + (turn.mode === 'grounded' ? 'grounded' : 'web') +
+          ' run — every span is proven verbatim before the prose is written, so a claim is never ' +
+          'written and then withdrawn. The drop list belongs to Verified mode.'
         : has('dropped')
           ? 'Nothing was dropped on this run.'
           : 'Not reported by this run.'));
@@ -1289,6 +1910,35 @@ function renderRefusals(turn, done) {
     for (const u of unanswered) g3.appendChild(el('div', 'drop', String(u)));
   }
   box.appendChild(g3);
+
+  /* 4 · what a confirmed badge on OUR OWN evidence does not buy.
+     Only when internal evidence was actually used, because a caveat printed
+     under an answer it does not apply to is noise, and noise is how the real
+     ones stop being read. */
+  const usedBrain = turn.sources.some((r) => r.kind === 'brain');
+  const usedLedger = turn.sources.some((r) => r.kind === 'ledger');
+  const usedWorld = turn.sources.some((r) => r.kind === 'world');
+  if (usedBrain || usedLedger || usedWorld) {
+    const g4 = el('div', 'rgroup');
+    g4.appendChild(el('span', 'eyebrow', 'What our own evidence does not prove'));
+    if (usedBrain) {
+      g4.appendChild(el('div', 'none',
+        'A confirmed citation to one of our documents means the quote is really in it — not that ' +
+        'the document is right. It was checked when it was written, not by this run, and nothing ' +
+        'outside Taskly was consulted for those lines.'));
+    }
+    if (usedWorld) {
+      g4.appendChild(el('div', 'none',
+        'A competitor fact is our reading of their page on a date. Their page may have changed ' +
+        'since; the date on each card is how far back the claim reaches.'));
+    }
+    if (usedLedger) {
+      g4.appendChild(el('div', 'none',
+        'A forecast is not an outcome. Anything cited from the ledger is what we expected at some ' +
+        'probability — it has not been measured, and it may not happen.'));
+    }
+    box.appendChild(g4);
+  }
 
   box.classList.remove('hidden');
 }
@@ -1473,6 +2123,32 @@ const VERDICT_COPY = {
   flagged: ['Unconfirmed', 'Could not be confirmed from what it cites. The source is real; the sentence goes further than the quoted span does.'],
 };
 
+/**
+ * CONFIRMED DOES NOT MEAN THE SAME THING FOR ALL FOUR KINDS, and one sentence
+ * of copy for all of them is where grounded mode would quietly overclaim.
+ *
+ * On the web it means: these words are on a page we fetched this run. In our
+ * own vault it means: these words are in a document WE wrote — which is
+ * evidence we said it, not evidence it is so. On a ledger row it means the
+ * forecast is quoted as recorded — a thing we expected, which may not happen.
+ * The check is identical in all four cases; what it licenses is not.
+ */
+const CONFIRMED_BY_KIND = {
+  web: VERDICT_COPY.confirmed[1],
+  world: 'The quote is verbatim on their page as we recorded it, and the figures in this sentence match. ' +
+         'What their page says today may differ — this is our reading, on a date.',
+  brain: 'The quote is verbatim in our own document, and the figures match it. That we wrote it down is ' +
+         'evidence we said it, not evidence it is true. Nothing outside Taskly was consulted for this line.',
+  ledger: 'The forecast is quoted as it was recorded. It is what we expected at some probability — ' +
+          'it is not a measurement, and it has not necessarily happened.',
+};
+
+function verdictCopy(kind, verdict) {
+  const base = VERDICT_COPY[verdict] || VERDICT_COPY.pending;
+  if (verdict !== 'confirmed') return base;
+  return [base[0], CONFIRMED_BY_KIND[kind] || base[1]];
+}
+
 let tipFor = null;
 
 function showTip(badge) {
@@ -1483,26 +2159,50 @@ function showTip(badge) {
   const sent = turn.sentences.get(Number(badge.dataset.n));
   const verdict = sent ? sent.verdict : 'pending';
   const src = span ? turn.sources.find((s) => s.i === span.sourceIndex) : null;
+  const kind = src ? src.kind : 'web';
 
   const tip = $('#tip');
   tip.replaceChildren();
 
   const top = el('div', 'top');
-  top.appendChild(favicon(src ? src.domain : ''));
-  top.appendChild(el('span', 'dom', src ? src.domain : 'source ' + (span ? span.sourceIndex : '?')));
+  top.appendChild(kind === 'web' && src ? favicon(src.domain) : kindMark(kind));
+  top.appendChild(el('span', 'dom',
+    src ? (INTERNAL[kind] ? KIND[kind].origin : src.domain) : 'source ' + (span ? span.sourceIndex : '?')));
   tip.appendChild(top);
   tip.appendChild(el('div', 'ttl', src ? src.title : 'Source not yet received'));
+  // Same split the card uses: the document on one line, the place inside it
+  // on the next. The clipboard still gets the locator whole.
+  if (src && INTERNAL[kind] && src.path) tip.appendChild(el('div', 'loc', src.path));
+  if (src && kind === 'world') {
+    const when = whenText(src.observedAt);
+    tip.appendChild(el('span', 'when', when ? 'Read on ' + when : 'Read — date not recorded'));
+  }
+  if (src && kind === 'ledger') {
+    const when = whenText(src.observedAt);
+    tip.appendChild(el('span', 'when', when ? 'Recorded ' + when : 'Recorded — date not noted'));
+  }
 
   if (span && span.quote) tip.appendChild(el('blockquote', null, '“' + span.quote + '”'));
   else tip.appendChild(el('blockquote', null, 'The quoted span for this marker has not arrived yet.'));
 
+  const copy = verdictCopy(kind, verdict);
   const v = el('div', 'verdict ' + verdict);
-  v.appendChild(el('b', null, VERDICT_COPY[verdict][0]));
+  v.appendChild(el('b', null, copy[0]));
   v.appendChild(document.createTextNode(
-    verdict === 'flagged' && sent && sent.why ? sent.why : VERDICT_COPY[verdict][1]));
+    verdict === 'flagged' && sent && sent.why ? sent.why : copy[1]));
   tip.appendChild(v);
 
-  if (src && src.url) tip.appendChild(el('span', 'open', 'Click to open ' + src.domain + ' ↗'));
+  // The last line of a tooltip is a promise about the next click. It is made
+  // only where it can be kept.
+  if (src && src.url) {
+    tip.appendChild(el('span', 'open', kind === 'world'
+      ? 'Click to open ' + src.domain + ' ↗ — their page as it stands today'
+      : 'Click to open ' + src.domain + ' ↗'));
+  } else if (src && kind === 'brain') {
+    tip.appendChild(el('span', 'open', 'No link — it is our own document. Click to copy the path'));
+  } else if (src && kind === 'ledger') {
+    tip.appendChild(el('span', 'open', 'No link — it is a ledger row. Click to copy it'));
+  }
 
   tip.classList.add('on');
   tipFor = badge;
@@ -1539,14 +2239,22 @@ window.addEventListener('scroll', () => { if (tipFor) positionTip(tipFor); }, tr
 window.addEventListener('resize', () => { if (tipFor) positionTip(tipFor); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideTip(); });
 
+/**
+ * A marker click opens the page — WHERE THERE IS ONE.
+ *
+ * `src.url` was already resolved through safeUrl in onSource for the two kinds
+ * that have a page, and left null for the two that do not, so an internal
+ * locator can never be handed to window.open. The internal kinds get the only
+ * useful action they have instead: the locator on the clipboard.
+ */
 function openBadge(badge) {
   const turn = TURNS.get(badge.dataset.turn);
   if (!turn) return;
-  const span = turn.spans.get(Number(badge.dataset.span));
-  const src = span ? turn.sources.find((s) => s.i === span.sourceIndex) : null;
-  const url = src && safeUrl(src.url);
-  if (url) window.open(url, '_blank', 'noopener,noreferrer');
-  else toast('No URL for that citation yet');
+  const src = sourceForSpan(turn, badge.dataset.span);
+  if (src && src.url) { window.open(src.url, '_blank', 'noopener,noreferrer'); return; }
+  if (src && src.locator) { copyText(src.locator, 'Copied — ' + src.locator); return; }
+  if (src) { toast('No page to open — ' + KIND_SAYS[src.kind]); return; }
+  toast('The source for that citation has not arrived yet');
 }
 document.addEventListener('click', (e) => {
   const b = e.target.closest && e.target.closest('.cb');
@@ -1611,9 +2319,14 @@ function submit(raw) {
   // the route loads the thread's messages as history, the planner resolves
   // "and in Vancouver?" against them, and the prior sources are reused rather
   // than re-bought. Its absence is what starts a thread.
+  // Web sends no `mode` at all: it is the route's only behaviour today, and a
+  // value invented here would be a guess about a vocabulary answer-route.ts
+  // owns. Grounded sends one and then checks the answer for evidence it was
+  // honoured — see renderModeNote.
+  const param = MODES[S.mode] && MODES[S.mode].param;
   const url = S.endpoint + '?q=' + encodeURIComponent(q) +
     (S.threadId ? '&thread=' + encodeURIComponent(S.threadId) : '') +
-    (S.mode === 'verified' ? '&mode=verified' : '');
+    (param ? '&mode=' + encodeURIComponent(param) : '');
 
   let got = 0;
   const es = new EventSource(url);
@@ -1739,6 +2452,11 @@ function at(ms, fn) { S.demoTimers.push(setTimeout(fn, ms)); }
  *  · sentences are numbered FROM ZERO.
  */
 function runDemo(turn) {
+  if (turn.mode === 'grounded') { runGroundedDemo(turn); return; }
+  runWebDemo(turn);
+}
+
+function runWebDemo(turn) {
   let t = 0;
 
   at(t += 90, () => onStatus(turn, { phase: 'planning' }));
@@ -1781,6 +2499,124 @@ function runDemo(turn) {
   at(t + 1700, () => { finishTurn(turn, DEMO_DONE); nudgeScroll(false); });
 }
 
+/* ══ ?demo=1 with Grounded selected ════════════════════════════════════════
+
+   The point of this script is ONE SCREEN CARRYING ALL FOUR KINDS, because the
+   distinction between them is the entire value of grounded mode and it is
+   invisible until they sit next to each other. A fixture of four web cards
+   proves nothing about the thing most likely to go wrong.
+
+   It also carries the two cases that are easy to get wrong and impossible to
+   see otherwise: a sentence whose every citation is a ledger row (which must
+   not read as a measurement), and a `world` fact read six weeks ago beside one
+   read yesterday (which must not read as equally current).
+
+   The `url` of a brain or ledger source is a LOCATOR, not a link — exactly as
+   the wire contract says — so this fixture is also the regression test for the
+   card that must never become an anchor. */
+
+const G_SOURCES = [
+  { i: 1, kind: 'world', url: 'https://www.jiffyondemand.com/pricing',
+    domain: 'jiffyondemand.com', title: 'Jiffy — what a handyman visit costs',
+    observedAt: '2026-08-28T13:40:00.000Z' },
+  { i: 2, kind: 'world', url: 'https://www.taskrabbit.ca/toronto/handyman',
+    domain: 'taskrabbit.ca', title: 'TaskRabbit Toronto — handyman rates',
+    observedAt: '2026-07-14T09:05:00.000Z' },
+  // Shaped the way the ROUTE actually emits a Brain source, which the first
+  // live grounded run is what taught: `title` is the document path, and the
+  // heading trail rides in the locator after the section mark. A fixture with
+  // a tidy human title would have hidden the card's real problem.
+  { i: 3, kind: 'brain',
+    url: 'taskly-brain/60-business/pricing/PRICING_v3.md § Pricing v3 › 4. Commission and what it covers',
+    domain: 'brain', title: 'taskly-brain/60-business/pricing/PRICING_v3.md' },
+  { i: 4, kind: 'brain',
+    url: 'taskly-brain/60-business/model/COMPETITIVE-LANDSCAPE.md § Competitive landscape › 2. Jiffy',
+    domain: 'brain', title: 'taskly-brain/60-business/model/COMPETITIVE-LANDSCAPE.md' },
+  { i: 5, kind: 'ledger', url: 'prediction ledger · row pr_0142',
+    domain: 'ledger', title: 'Jiffy raises its published GTA rate before 1 Nov 2026',
+    observedAt: '2026-08-09T00:00:00.000Z' },
+  { i: 6, kind: 'web', url: 'https://www.thestar.com/business/home-services-prices-2026/',
+    domain: 'thestar.com', title: 'What Torontonians paid for home help this year' },
+];
+
+const G_SPANS = [
+  { id: 1, sourceIndex: 1, quote: 'Handyman visits start at $99 for the first hour, billed in 30-minute increments after that.' },
+  { id: 2, sourceIndex: 2, quote: 'Taskers set their own rates. Handyman rates in Toronto start around $45/hr.' },
+  { id: 3, sourceIndex: 3, quote: 'COMMISSION_RATE = 0.2 — the poster pays the agreed deal and the Tasker receives 80% on release.' },
+  { id: 4, sourceIndex: 4, quote: 'Jiffy runs a closed network of vetted pros and does not publish per-tasker rates.' },
+  { id: 5, sourceIndex: 5, quote: 'P(Jiffy raises its published GTA handyman rate before 1 Nov 2026) = 0.35.' },
+  { id: 6, sourceIndex: 6, quote: 'Households in the GTA reported paying a median $120 for a single home-repair visit.' },
+];
+
+const G_SENTENCES = [
+  { text: 'Jiffy publishes a starting price and TaskRabbit does not: Jiffy’s own page said handyman visits start at $99 for the first hour when we read it on 28 August [1], while TaskRabbit lists tasker-set rates starting around $45/hr as we read it in mid-July [2].',
+    verdict: 'confirmed' },
+  { text: 'Our own take-rate is 20% of the agreed deal, with the Tasker receiving 80% on release [3].',
+    verdict: 'confirmed' },
+  { text: 'We have written down that Jiffy runs a closed network of vetted pros and does not publish per-tasker rates [4].',
+    verdict: 'confirmed' },
+  { text: 'We put 35% on Jiffy raising its published GTA handyman rate before 1 November [5].',
+    verdict: 'confirmed' },
+  { text: 'A poster comparing the two therefore sees our commission before they see a rate [3][6].',
+    verdict: 'flagged',
+    why: 'The quotes establish our take-rate and a median paid price. Neither says anything about what a poster sees first, or in what order — that step is the model’s, not the record’s.' },
+];
+
+const G_DONE = { costCents: 0.06, threadId: 'g1', messageId: 'gm1', flagged: 1 };
+
+const G_EPILOGUE = {
+  related: [
+    'What did Jiffy’s page say the last three times we read it?',
+    'Which of our pricing decisions has no ledger row behind it?',
+    'What have we forecast about TaskRabbit that has already resolved?',
+  ],
+  unanswered: [
+    'What Jiffy charges after the first hour — we recorded the starting price only.',
+    'Whether TaskRabbit’s July rate still holds; nothing newer has been read.',
+  ],
+  note: '',
+};
+
+function runGroundedDemo(turn) {
+  let t = 0;
+
+  at(t += 90, () => onStatus(turn, { phase: 'planning' }));
+  at(t += 480, () => onStatus(turn, { phase: 'searching',
+    detail: 'world model · brain · prediction ledger' }));
+  at(t += 620, () => onStatus(turn, { phase: 'reading', detail: '6 record(s)' }));
+
+  // No 2s-per-host politeness floor on our own records, so these land faster
+  // than the web script's — which is itself part of what grounded mode is for.
+  G_SOURCES.forEach((src, i) => at(t + 260 + i * 380, () => { onSource(turn, src); nudgeScroll(false); }));
+  t += 260 + G_SOURCES.length * 380;
+
+  at(t += 220, () => onStatus(turn, { phase: 'attributing', detail: G_SOURCES.length + ' record(s)' }));
+  G_SPANS.forEach((sp, i) => at(t + 110 + i * 55, () => onSpan(turn, sp)));
+  t += 110 + G_SPANS.length * 55;
+
+  at(t += 300, () => onStatus(turn, { phase: 'writing' }));
+  t += 200;
+
+  G_SENTENCES.forEach((sent, idx) => {
+    const n = idx;
+    for (const piece of chunk(sent.text)) {
+      t += 20 + Math.random() * 30;
+      const ms = t;
+      S.demoTimers.push(setTimeout(() => { feedDelta(turn, n, piece); nudgeScroll(false); }, ms));
+    }
+    const settleAt = t + 800;
+    S.demoTimers.push(setTimeout(() => {
+      if (idx === G_SENTENCES.length - 1) onStatus(turn, { phase: 'checking' });
+      onVerdict(turn, { n, verdict: sent.verdict, why: sent.why });
+    }, settleAt));
+  });
+
+  at(t + 1300, () => onStatus(turn, { phase: 'done',
+    detail: G_SENTENCES.length + ' sentence(s), 1 flagged' }));
+  at(t + 1450, () => applyEpilogue(turn, G_EPILOGUE));
+  at(t + 1600, () => { finishTurn(turn, G_DONE); nudgeScroll(false); });
+}
+
 /** Split into 2–7 character pieces, deliberately cutting through "[4]" so the
  *  held-bracket path in `drain` is exercised every single run. */
 function chunk(text) {
@@ -1802,7 +2638,7 @@ $('#q0').focus();
 // A question in the URL runs on load, so a link can carry one.
 const initial = new URLSearchParams(location.search).get('q');
 if (initial) submit(initial);
-else if (S.demo) { $('#q0').value = SUGGESTED[0]; }
+else if (S.demo) { $('#q0').value = (SUGGESTED[S.mode] || SUGGESTED.web)[0]; }
 </script>
 </body>
 </html>

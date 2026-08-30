@@ -44,7 +44,7 @@ import {
 import { readState } from './queries.js';
 import { runResearch } from './research-route.js';
 import { runDraft } from './draft-route.js';
-import { runAnswer } from './answer-route.js';
+import { parseMode, runAnswer } from './answer-route.js';
 import { primeBudget } from './budget-boot.js';
 import { Runner, RunBusy, isStage } from './runner.js';
 
@@ -329,8 +329,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   if (path === '/api/answer') {
     // GET, because EventSource cannot POST. `thread` continues a conversation;
-    // its absence starts one.
-    return runAnswer(res, url.searchParams.get('q') ?? '', url.searchParams.get('thread'));
+    // its absence starts one. `mode` chooses web / grounded / verified, and an
+    // unknown value is web rather than an error — a mode rides in a link
+    // somebody may have kept, and refusing an old link is worse than answering
+    // it the default way.
+    return runAnswer(
+      res,
+      url.searchParams.get('q') ?? '',
+      url.searchParams.get('thread'),
+      parseMode(url.searchParams.get('mode')),
+    );
   }
 
   if (path === '/api/threads' && (req.method ?? 'GET') === 'GET') {
