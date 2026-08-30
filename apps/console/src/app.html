@@ -1,0 +1,1412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TMOS — Ask</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600&display=swap" rel="stylesheet">
+<!--
+  THE ANSWER ENGINE SHELL.
+
+  One file, no bundler, no framework. Not asceticism — arithmetic. React here
+  would mean a build step, new devDeps in a LOCKED pnpm-lock.yaml, a knip entry,
+  and a jsdom test env this repo does not have, to render a page that is one
+  list, one paragraph, and a text box.
+
+  ── WHY THIS IS NOT ui.html WITH A NEW TAB ─────────────────────────────────
+
+  ui.html renders by rebuilding innerHTML from a snapshot. That is fine for a
+  dashboard that changes once a minute and impossible for prose that changes
+  forty times a second: rebuilding the answer on every token throws away the
+  selection, the scroll anchor, the hover target and any animation in flight,
+  and it is quadratic in answer length.
+
+  So this file has a state object and functions that touch only the nodes that
+  changed. The hot path — `feedDelta` — ends at `Text.appendData()`. Nothing
+  above the live sentence is read, re-created or re-laid-out while text streams.
+
+  ── WHAT IS UNTRUSTED ──────────────────────────────────────────────────────
+
+  Everything the server sends. Page titles come from other people's HTML, and
+  prose comes from a language model that has read other people's HTML. Dynamic
+  values are written with `textContent` or through `esc()`; a URL is opened only
+  after `safeUrl()` has agreed it is http(s).
+
+  ── ?demo=1 ────────────────────────────────────────────────────────────────
+
+  Replays a scripted run of the real events with real timing, no server, no
+  spend. It exists because the staging IS the product and the staging cannot be
+  reviewed from a screenshot of a finished answer — and because a UI you can
+  only exercise by paying for a 60-second pipeline run is a UI nobody exercises.
+-->
+<style>
+  /* ── tokens: carried from ui.html unchanged ───────────────────────────── */
+  :root{
+    --ground:#faf7f2; --surface:#ffffff; --line:#e8e2d8;
+    --ink:#14120f; --muted:#6b6459; --faint:#9c948699;
+    --brass:#b8860b; --hold:#2c6b50; --moved:#a04d1a;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:"Manrope",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --radius:16px;
+    /* hover is a wash, never a fill — the founder rule */
+    --wash:#14120f0a;
+    --brass-tint:#b8860b14;
+    --shadow:0 1px 2px #14120f0a, 0 8px 24px #14120f0a;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#0e1114; --surface:#161a1e; --line:#272d33;
+      --ink:#e7ebee; --muted:#939da5; --faint:#6c767e;
+      --brass:#cba347; --hold:#5aa886; --moved:#d17b45;
+      --wash:#e7ebee12; --brass-tint:#cba34720;
+      --shadow:0 1px 2px #0006, 0 8px 24px #0004;
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+       font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+  h1,h2,h3{font-weight:600;margin:0;letter-spacing:-.014em}   /* 600 is the ceiling */
+  a{color:inherit}
+  .eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;
+           text-transform:uppercase;color:var(--faint)}
+  .hidden{display:none!important}
+  button{font:inherit;font-size:13px;padding:7px 14px;border-radius:999px;
+         border:1px solid var(--line);background:var(--surface);color:var(--ink);
+         cursor:pointer;transition:background .14s ease,border-color .14s ease,transform .06s ease}
+  button:hover:not(:disabled){background:var(--wash);border-color:var(--faint)}
+  button:active:not(:disabled){transform:translateY(1px)}
+  button:disabled{opacity:.42;cursor:not-allowed}
+  button.primary{background:var(--brass);border-color:var(--brass);color:#fff}
+  button.primary:hover:not(:disabled){background:var(--brass);filter:brightness(1.07)}
+  :focus-visible{outline:2px solid var(--brass);outline-offset:2px;border-radius:6px}
+
+  /* ── shell ────────────────────────────────────────────────────────────── */
+  .app{display:flex;height:100vh;overflow:hidden}
+
+  aside{width:246px;flex:none;background:var(--surface);border-right:1px solid var(--line);
+        display:flex;flex-direction:column;min-height:0}
+  .side-head{padding:16px 16px 12px;display:flex;flex-direction:column;gap:2px}
+  .side-head h1{font-size:14.5px}
+  .side-new{margin:0 12px 10px;text-align:left;display:flex;align-items:center;gap:8px}
+  .side-new .plus{font-family:var(--mono);color:var(--brass)}
+  .side-lab{padding:6px 18px 6px;display:flex;align-items:center;gap:8px}
+  .threads{flex:1;overflow:auto;padding:2px 8px 14px;min-height:0}
+  .thread{display:block;width:100%;text-align:left;border:0;background:none;border-radius:10px;
+          padding:8px 10px;color:var(--muted);font-size:13px;line-height:1.35;
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .thread:hover{background:var(--wash);border-color:transparent}
+  .thread[aria-current="true"]{background:var(--wash);color:var(--ink)}
+  .thread small{display:block;font-family:var(--mono);font-size:9.5px;color:var(--faint);
+                letter-spacing:.08em;margin-top:2px}
+  .side-note{padding:4px 18px 16px;color:var(--faint);font-size:12px;line-height:1.5}
+  .side-foot{border-top:1px solid var(--line);padding:10px 14px;display:flex;
+             align-items:center;gap:8px;flex-wrap:wrap}
+  .side-foot a{font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+               text-transform:uppercase;color:var(--faint);text-decoration:none}
+  .side-foot a:hover{color:var(--brass)}
+
+  .main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
+
+  /* ── empty state ──────────────────────────────────────────────────────── */
+  .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+         padding:24px;overflow:auto}
+  .empty-in{width:100%;max-width:640px;text-align:center}
+  .empty h2{font-size:26px;letter-spacing:-.02em;margin-bottom:8px}
+  .empty p.sub{color:var(--muted);margin:0 0 26px;font-size:14px}
+  .prompts{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:20px}
+  .prompt{border:1px solid var(--line);background:var(--surface);border-radius:999px;
+          padding:8px 14px;font-size:12.5px;color:var(--muted);text-align:left;
+          max-width:100%;white-space:normal;line-height:1.4}
+  .prompt:hover{background:var(--wash);color:var(--ink)}
+
+  /* ── the box ──────────────────────────────────────────────────────────── */
+  .box{display:flex;align-items:flex-end;gap:8px;background:var(--surface);
+       border:1px solid var(--line);border-radius:var(--radius);padding:10px 10px 10px 16px;
+       box-shadow:var(--shadow);transition:border-color .15s ease}
+  .box:focus-within{border-color:var(--brass)}
+  .box textarea{flex:1;font:inherit;font-size:15px;line-height:1.5;border:0;outline:0;
+                background:none;color:var(--ink);resize:none;max-height:160px;min-height:26px;
+                padding:3px 0}
+  .box textarea::placeholder{color:var(--faint)}
+  .box .go{width:34px;height:34px;padding:0;flex:none;display:grid;place-items:center;
+           font-size:15px;line-height:1}
+  .modes{display:flex;gap:2px;border:1px solid var(--line);border-radius:999px;padding:2px;flex:none}
+  .modes button{border:0;padding:4px 10px;font-size:11.5px;color:var(--muted);background:none}
+  .modes button[aria-pressed="true"]{background:var(--brass-tint);color:var(--brass)}
+  .modes button:hover{background:var(--wash)}
+
+  /* ── thread view ──────────────────────────────────────────────────────── */
+  .scroll{flex:1;overflow:auto;min-height:0}
+  .col{max-width:760px;margin:0 auto;padding:30px 24px 40px}
+  .composer{border-top:1px solid var(--line);background:var(--ground);padding:12px 24px 16px}
+  .composer .col{padding:0}
+
+  .turn{padding-bottom:30px;margin-bottom:6px}
+  .turn + .turn{border-top:1px solid var(--line);padding-top:28px}
+  .turn h2.q{font-size:23px;line-height:1.28;letter-spacing:-.02em;margin-bottom:14px;
+             overflow-wrap:anywhere}
+
+  /* ── status ───────────────────────────────────────────────────────────── */
+  .status{margin:0 0 18px}
+  .live{display:flex;align-items:center;gap:9px;color:var(--muted);font-size:13px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--brass);flex:none;
+       animation:pulse 1.15s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.28;transform:scale(.8)}}
+  .live .phase{position:relative}
+  .steps-toggle{padding:4px 11px;font-size:11.5px;color:var(--muted);
+                font-family:var(--mono);letter-spacing:.06em}
+  .steps{list-style:none;margin:10px 0 0;padding:0 0 0 9px;border-left:1px solid var(--line)}
+  .steps li{font-size:12.5px;color:var(--muted);padding:3px 0 3px 12px;position:relative}
+  .steps li::before{content:'';position:absolute;left:-13px;top:11px;width:7px;height:1px;
+                    background:var(--line)}
+  .steps li b{font-weight:500;color:var(--ink);font-family:var(--mono);font-size:10px;
+              letter-spacing:.1em;text-transform:uppercase;margin-right:8px}
+
+  /* ── sources ──────────────────────────────────────────────────────────── */
+  .sources{margin:0 0 22px}
+  .srchead{display:flex;align-items:baseline;gap:10px;margin-bottom:9px}
+  .srcgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:8px}
+  .src{display:block;text-decoration:none;background:var(--surface);border:1px solid var(--line);
+       border-radius:11px;padding:10px 11px;min-width:0;
+       opacity:0;transform:translateY(6px);
+       transition:opacity .34s ease,transform .34s cubic-bezier(.16,1,.3,1),
+                  background .14s ease,border-color .14s ease}
+  .src.in{opacity:1;transform:none}
+  .src:hover{background:var(--wash);border-color:var(--faint)}
+  .src .top{display:flex;align-items:center;gap:6px;margin-bottom:5px}
+  .fav{width:14px;height:14px;border-radius:3px;flex:none;object-fit:cover}
+  .fav-fb{width:14px;height:14px;border-radius:3px;flex:none;display:grid;place-items:center;
+          background:var(--brass-tint);color:var(--brass);font-family:var(--mono);
+          font-size:8.5px;line-height:1;text-transform:uppercase}
+  .src .dom{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--faint);
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+  .src .num{font-family:var(--mono);font-size:9.5px;color:var(--faint);flex:none}
+  .src .ttl{font-size:12.5px;line-height:1.35;color:var(--ink);
+            display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+  /* ── prose + citations ────────────────────────────────────────────────── */
+  .prose{font-size:16px;line-height:1.72;max-width:66ch;overflow-wrap:anywhere}
+  .sent{transition:background .25s ease}
+  .sent.flagged{text-decoration:underline dotted var(--moved);text-underline-offset:4px;
+                text-decoration-thickness:1px}
+  .cb{font-family:var(--mono);font-size:9.5px;line-height:1;vertical-align:super;
+      display:inline-block;min-width:12px;text-align:center;padding:2px 2px;margin:0 0 0 1px;
+      border-radius:5px;cursor:pointer;border:1px solid transparent;
+      transition:background .18s ease,color .18s ease,border-color .18s ease;
+      user-select:none}
+  .cb.pending{color:var(--faint);border-color:var(--line);border-style:dashed;
+              animation:breathe 1.5s ease-in-out infinite}
+  @keyframes breathe{0%,100%{opacity:1}50%{opacity:.45}}
+  .cb.confirmed{color:var(--brass);background:var(--brass-tint);border-color:transparent}
+  .cb.stored{color:var(--muted);background:var(--wash);border-color:transparent}
+  .cb.flagged{color:var(--moved);background:transparent;border-color:var(--moved);
+              border-style:dotted}
+  .cb:hover{filter:brightness(1.1);border-color:var(--brass)}
+  .cursor{display:inline-block;width:7px;height:1em;vertical-align:-2px;margin-left:1px;
+          background:var(--brass);opacity:.6;animation:blink .9s steps(2,start) infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  /* ── tooltip ──────────────────────────────────────────────────────────── */
+  .tip{position:fixed;z-index:60;width:min(340px,calc(100vw - 24px));background:var(--surface);
+       border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);
+       padding:11px 13px;opacity:0;transform:translateY(4px);pointer-events:none;
+       transition:opacity .13s ease,transform .13s ease}
+  .tip.on{opacity:1;transform:none}
+  .tip .top{display:flex;align-items:center;gap:6px;margin-bottom:5px}
+  .tip .dom{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--faint)}
+  .tip .ttl{font-size:13px;line-height:1.35;margin-bottom:8px}
+  .tip blockquote{margin:0 0 8px;padding:8px 11px;background:var(--ground);
+                  border-left:2px solid var(--brass);border-radius:0 8px 8px 0;
+                  font-size:12px;line-height:1.5;color:var(--muted)}
+  .tip .verdict{font-size:11.5px;line-height:1.45;color:var(--muted);
+                padding-top:7px;border-top:1px solid var(--line)}
+  .tip .verdict b{font-weight:500;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+                  text-transform:uppercase;margin-right:6px}
+  .tip .verdict.confirmed b{color:var(--hold)}
+  .tip .verdict.flagged b{color:var(--moved)}
+  .tip .verdict.pending b{color:var(--faint)}
+  .tip .open{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+             color:var(--faint);margin-top:7px;display:block}
+
+  /* ── refusals: the section §7 says never to delete ────────────────────── */
+  .refusals{margin-top:26px;border:1px solid var(--line);border-radius:var(--radius);
+            background:var(--surface);padding:15px 17px}
+  .refusals h3{font-size:13px;margin-bottom:3px}
+  .refusals .why-here{color:var(--muted);font-size:12.5px;margin:0 0 12px;max-width:62ch}
+  .rgroup + .rgroup{margin-top:14px;padding-top:13px;border-top:1px solid var(--line)}
+  .rgroup .eyebrow{display:block;margin-bottom:7px}
+  .drop{padding:8px 0;border-bottom:1px dashed var(--line);color:var(--muted);font-size:13px;
+        line-height:1.5}
+  .drop:last-child{border-bottom:0}
+  .drop b{font-weight:500;color:var(--faint);text-decoration:line-through}
+  .drop em{display:block;font-style:normal;font-size:12px;color:var(--moved);margin-top:3px}
+  .drop .qt{display:block;font-size:12.5px;color:var(--ink);margin-bottom:3px}
+  .none{color:var(--faint);font-size:12.5px;padding:4px 0}
+
+  /* ── related + actions ────────────────────────────────────────────────── */
+  .related{margin-top:24px}
+  .related .eyebrow{display:block;margin-bottom:9px}
+  .rq{display:block;width:100%;text-align:left;border:0;border-top:1px solid var(--line);
+      border-radius:0;padding:11px 4px;font-size:14px;color:var(--ink);background:none;
+      white-space:normal;line-height:1.4}
+  .rq:hover{background:var(--wash);border-color:var(--line)}
+  .rq .plus{color:var(--brass);font-family:var(--mono);margin-right:9px}
+  .actions{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:22px}
+  .actions .cost{margin-left:auto;font-family:var(--mono);font-size:10px;letter-spacing:.1em;
+                 text-transform:uppercase;color:var(--faint)}
+  .err{border:1px solid var(--moved);border-radius:12px;padding:11px 14px;color:var(--moved);
+       font-size:13px;background:var(--surface);margin-top:12px}
+  .err b{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.11em;
+         text-transform:uppercase;font-weight:500;margin-bottom:3px}
+
+  .banner{background:var(--brass-tint);border-bottom:1px solid var(--line);
+          padding:7px 24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;
+          text-transform:uppercase;color:var(--brass);display:flex;gap:12px;align-items:center}
+  .banner .spacer{flex:1}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,10px);z-index:70;
+         background:var(--ink);color:var(--ground);font-size:12.5px;padding:8px 15px;
+         border-radius:999px;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s}
+  .toast.on{opacity:1;transform:translate(-50%,0)}
+
+  /* ── narrow ───────────────────────────────────────────────────────────── */
+  .side-toggle{display:none}
+  @media (max-width:880px){
+    aside{position:fixed;inset:0 auto 0 0;z-index:50;transform:translateX(-100%);
+          transition:transform .2s cubic-bezier(.16,1,.3,1);box-shadow:var(--shadow)}
+    body.side-open aside{transform:none}
+    .side-toggle{display:inline-flex;align-items:center;gap:7px;position:fixed;top:12px;left:12px;
+                 z-index:40;background:var(--surface);box-shadow:var(--shadow)}
+    .col{padding:56px 18px 34px}
+    .composer{padding:10px 18px 14px}
+    .turn h2.q{font-size:20px}
+    .prose{font-size:15.5px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation-duration:.001ms!important;transition-duration:.001ms!important}
+    .src{opacity:1;transform:none}
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <aside id="side">
+    <div class="side-head">
+      <div class="eyebrow">Taskly marketing OS</div>
+      <h1>Ask</h1>
+    </div>
+    <button class="side-new" id="newThread"><span class="plus">+</span> New thread</button>
+    <div class="side-lab"><span class="eyebrow">Threads</span></div>
+    <div class="threads" id="threads"></div>
+    <div class="side-note hidden" id="threadNote"></div>
+    <div class="side-foot">
+      <a href="/" title="The old dashboard">Classic console</a>
+      <span class="eyebrow">·</span>
+      <a href="?demo=1" title="Replay a scripted run with no server">Demo</a>
+    </div>
+  </aside>
+
+  <button class="side-toggle" id="sideToggle" aria-label="Threads">☰</button>
+
+  <div class="main">
+    <div class="banner hidden" id="banner"></div>
+
+    <!-- empty state -->
+    <section class="empty" id="empty">
+      <div class="empty-in">
+        <h2>Ask it anything.</h2>
+        <p class="sub">Every figure comes back with the exact sentence it came from,
+          on a page we actually fetched. What could not be sourced is listed, not smoothed over.</p>
+        <div class="box" id="box0">
+          <textarea id="q0" rows="1" placeholder="Ask about a market, a competitor, or a call you have to make…"></textarea>
+          <div class="modes" id="modes0">
+            <button data-mode="fast" aria-pressed="true" title="Streams as it writes; each sentence is checked a beat behind">Fast</button>
+            <button data-mode="verified" aria-pressed="false" title="Nothing is shown until the whole answer passes the verbatim gate">Verified</button>
+          </div>
+          <button class="primary go" id="go0" aria-label="Ask">→</button>
+        </div>
+        <div class="prompts" id="prompts"></div>
+      </div>
+    </section>
+
+    <!-- thread view -->
+    <div class="scroll hidden" id="scroll">
+      <div class="col" id="turns"></div>
+    </div>
+    <div class="composer hidden" id="composer">
+      <div class="col">
+        <div class="box">
+          <textarea id="q1" rows="1" placeholder="Ask a follow-up…"></textarea>
+          <div class="modes" id="modes1">
+            <button data-mode="fast" aria-pressed="true">Fast</button>
+            <button data-mode="verified" aria-pressed="false">Verified</button>
+          </div>
+          <button class="primary go" id="go1" aria-label="Ask">→</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="tip" id="tip" role="tooltip"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+'use strict';
+
+/* ══ helpers ═══════════════════════════════════════════════════════════════ */
+
+const $ = (s, r) => (r || document).querySelector(s);
+
+/** Model output and page titles are untrusted text. Same pattern as ui.html. */
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/** An href is a capability. Only http(s) gets one — never `javascript:`. */
+const safeUrl = (u) => {
+  try {
+    const p = new URL(String(u), location.href);
+    return (p.protocol === 'http:' || p.protocol === 'https:') ? p.href : null;
+  } catch { return null; }
+};
+
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = String(text);
+  return n;
+};
+
+const domainOf = (u, fallback) => {
+  try { return new URL(String(u)).hostname.replace(/^www\./, ''); }
+  catch { return String(fallback || ''); }
+};
+
+/** Markers out, and the space they left in front of the punctuation with them. */
+const stripMarkers = (t) => String(t)
+  .replace(/\[[\d,;\s]+\]/g, '')
+  .replace(/\s+([.,;:!?])/g, '$1')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const PHASE_LABEL = {
+  planning: 'Planning searches…',
+  searching: 'Searching…',
+  reading: 'Reading sources…',
+  attributing: 'Finding quotable spans…',
+  writing: 'Writing…',
+  checking: 'Checking every figure…',
+  done: 'Done',
+};
+
+let toastTimer = 0;
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('on'), 1900);
+}
+
+/* ══ state ═════════════════════════════════════════════════════════════════ */
+
+/**
+ * One object, mutated in place; render functions read from it and touch only
+ * the nodes that changed. No diffing, no re-render of the answer — the whole
+ * reason this is not `ui.html`.
+ */
+const S = {
+  mode: 'fast',
+  threadId: null,
+  threads: [],
+  turns: [],          // Turn[] — one per question asked in this thread
+  live: null,         // the Turn currently streaming, or null
+  es: null,           // EventSource
+  demo: new URLSearchParams(location.search).get('demo') === '1',
+  endpoint: new URLSearchParams(location.search).get('api') || '/api/answer',
+  demoTimers: [],
+};
+
+/**
+ * A turn owns its own DOM. `sentences` is keyed by the SERVER's sentence index
+ * — the client never splits text, because two splitters that disagree about
+ * "Inc." put a verdict on the wrong sentence, which is worse than no verdict.
+ */
+function newTurn(question) {
+  return {
+    id: 't' + Math.random().toString(36).slice(2, 9),
+    question,
+    steps: [],          // {phase, detail}
+    sources: [],        // SourceEvent
+    spans: new Map(),   // id -> SpanEvent
+    sentences: new Map(), // n -> sentence record
+    order: [],          // sentence indices, in creation order
+    doneAt: null,
+    els: null,
+  };
+}
+
+/* ══ chrome ════════════════════════════════════════════════════════════════ */
+
+const SUGGESTED = [
+  'Should we run a snow-removal campaign in Toronto this October?',
+  'What are Jiffy and TaskRabbit charging homeowners in the GTA right now?',
+  'Which home-services category has the least competition in Toronto?',
+  'What changed on our competitors’ pricing pages this month?',
+];
+
+(function mountPrompts() {
+  const wrap = $('#prompts');
+  for (const p of SUGGESTED) {
+    const b = el('button', 'prompt', p);
+    b.addEventListener('click', () => { $('#q0').value = p; submit(p); });
+    wrap.appendChild(b);
+  }
+})();
+
+function bindBox(taInput, goBtn, modesId) {
+  const ta = $(taInput);
+  const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; };
+  ta.addEventListener('input', grow);
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(ta.value); ta.value = ''; grow(); }
+  });
+  $(goBtn).addEventListener('click', () => { submit(ta.value); ta.value = ''; grow(); });
+  $(modesId).addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-mode]');
+    if (!b) return;
+    S.mode = b.dataset.mode;
+    for (const m of document.querySelectorAll('.modes button')) {
+      m.setAttribute('aria-pressed', String(m.dataset.mode === S.mode));
+    }
+  });
+}
+bindBox('#q0', '#go0', '#modes0');
+bindBox('#q1', '#go1', '#modes1');
+
+$('#newThread').addEventListener('click', () => resetToEmpty());
+$('#sideToggle').addEventListener('click', () => document.body.classList.toggle('side-open'));
+
+function resetToEmpty() {
+  stopStream();
+  S.turns = [];
+  S.live = null;
+  S.threadId = null;
+  $('#turns').replaceChildren();
+  $('#scroll').classList.add('hidden');
+  $('#composer').classList.add('hidden');
+  $('#empty').classList.remove('hidden');
+  for (const t of document.querySelectorAll('.thread')) t.setAttribute('aria-current', 'false');
+  $('#q0').focus();
+}
+
+function enterThreadView() {
+  $('#empty').classList.add('hidden');
+  $('#scroll').classList.remove('hidden');
+  $('#composer').classList.remove('hidden');
+  document.body.classList.remove('side-open');
+}
+
+if (S.demo) {
+  const b = $('#banner');
+  b.classList.remove('hidden');
+  b.append(
+    document.createTextNode('Demo — scripted events, no server, no spend'),
+    el('span', 'spacer'),
+  );
+  const leave = el('button', null, 'Leave demo');
+  leave.style.cssText = 'font-size:11px;padding:3px 10px';
+  leave.addEventListener('click', () => { location.search = ''; });
+  b.appendChild(leave);
+}
+
+/* ══ threads sidebar ═══════════════════════════════════════════════════════
+   Another agent owns /api/threads. Until it lands this 404s, and a 404 here
+   must cost nothing: the list is a convenience, the answer engine is not. */
+
+async function loadThreads() {
+  if (S.demo) { renderThreads(DEMO_THREADS); return; }
+  try {
+    const res = await fetch('/api/threads', { headers: { accept: 'application/json' } });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const body = await res.json();
+    const rows = Array.isArray(body) ? body : (Array.isArray(body && body.threads) ? body.threads : []);
+    renderThreads(rows);
+  } catch {
+    renderThreads([]);
+    note('No saved threads yet. Answers persist once the thread store is wired up.');
+  }
+}
+
+function note(msg) {
+  const n = $('#threadNote');
+  n.textContent = msg;
+  n.classList.remove('hidden');
+}
+
+function renderThreads(rows) {
+  const wrap = $('#threads');
+  wrap.replaceChildren();
+  S.threads = rows;
+  if (!rows.length) return;
+  $('#threadNote').classList.add('hidden');
+  for (const r of rows) {
+    const b = el('button', 'thread');
+    b.setAttribute('aria-current', 'false');
+    b.appendChild(document.createTextNode(String(r.title || r.question || 'Untitled thread')));
+    if (r.createdAt || r.created_at) {
+      b.appendChild(el('small', null, String(r.createdAt || r.created_at).slice(0, 10)));
+    }
+    b.addEventListener('click', () => openThread(r, b));
+    wrap.appendChild(b);
+  }
+}
+
+async function openThread(row, btn) {
+  for (const t of document.querySelectorAll('.thread')) t.setAttribute('aria-current', 'false');
+  btn.setAttribute('aria-current', 'true');
+  document.body.classList.remove('side-open');
+  S.threadId = row.id ?? null;
+  if (S.demo) { resetToEmpty(); submit(String(row.title)); return; }
+  try {
+    const res = await fetch('/api/threads/' + encodeURIComponent(String(row.id)));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const detail = await res.json();
+    if (!Array.isArray(detail && detail.messages) || detail.messages.length === 0) throw new Error('empty');
+    replayThread(detail);
+  } catch {
+    // Degrade honestly rather than pretending the thread is empty.
+    S.turns = [];
+    $('#turns').replaceChildren();
+    enterThreadView();
+    const t = newTurn(String(row.title || row.question || 'Saved thread'));
+    S.turns.push(t);
+    $('#turns').appendChild(buildTurn(t));
+    showError(t, 'This thread is saved, but the transcript endpoint is not available yet. Ask the question again to re-run it.');
+    finishTurn(t, null);
+  }
+}
+
+/**
+ * Rebuild a stored thread through the same handlers the live stream uses.
+ *
+ * `ThreadDetail.messages` alternates user/assistant. An assistant message
+ * carries the whole answer as one `body` string with its `[N]` markers intact,
+ * plus the citations those markers resolve to — so the marker parser does the
+ * same work it does on a live stream, just fed in one bite.
+ *
+ * WHAT IS NOT STORED: the per-sentence verdicts. `message_citation` keeps the
+ * span (which is what stays checkable), not the checks that ran over the prose.
+ * So a replayed badge renders `stored` — neither confirmed nor flagged — and
+ * says so on hover. Painting them confirmed would be inventing a check.
+ */
+function replayThread(detail) {
+  S.turns = [];
+  S.live = null;
+  $('#turns').replaceChildren();
+  enterThreadView();
+
+  let turn = null;
+  const open = (question) => {
+    turn = newTurn(question);
+    turn.replayed = true;
+    S.turns.push(turn);
+    TURNS.set(turn.id, turn);
+    $('#turns').appendChild(buildTurn(turn));
+    return turn;
+  };
+
+  for (const m of (detail.messages || [])) {
+    if (m.role === 'user') { open(String(m.body ?? '')); continue; }
+    if (!turn) open('');
+
+    const cites = Array.isArray(m.citations) ? m.citations : [];
+    const payload = m.answer || {};
+    const docs = Array.isArray(payload.sources) ? payload.sources : [];
+
+    // Sources: the read documents when they were stored, otherwise the distinct
+    // pages the citations point at — a span is worthless without its page.
+    const order = [];
+    const indexOf = (url) => {
+      const at = order.indexOf(url);
+      if (at !== -1) return at + 1;
+      order.push(url);
+      const c = cites.find((x) => x.sourceUrl === url);
+      onSource(turn, { i: order.length, url, domain: domainOf(url, ''),
+                       title: (c && c.title) || domainOf(url, url) });
+      return order.length;
+    };
+    for (const d of docs) { order.push(String(d.url)); onSource(turn, {
+      i: order.length, url: d.url, domain: domainOf(d.url, ''), title: d.title }); }
+    for (const c of cites) {
+      onSpan(turn, { id: Number(c.ordinal), sourceIndex: indexOf(String(c.sourceUrl)),
+                     quote: String(c.span ?? '') });
+    }
+
+    feedDelta(turn, 1, String(m.body ?? ''));
+    markStored(turn);
+    finishTurn(turn, {
+      costCents: Number(m.costCents) || 0,
+      threadId: detail.id ?? S.threadId,
+      messageId: m.id ?? null,
+      flagged: 0,
+      dropped: payload.dropped,
+      unanswered: payload.unanswered,
+    });
+    turn = null;
+  }
+  SCROLLER.scrollTop = 0;
+}
+
+/** Badges on a replayed answer are settled but unjudged. See replayThread. */
+function markStored(turn) {
+  for (const n of turn.order) {
+    const s = turn.sentences.get(n);
+    s.verdict = 'stored';
+    s.node.classList.remove('pending');
+    for (const b of s.badges) {
+      b.classList.remove('pending');
+      b.classList.add('stored');
+      b.setAttribute('aria-label', 'Citation ' + b.dataset.span + ', from a saved answer');
+    }
+  }
+}
+
+/* ══ turn DOM ══════════════════════════════════════════════════════════════ */
+
+function buildTurn(turn) {
+  const root = el('article', 'turn');
+  root.id = turn.id;
+
+  const q = el('h2', 'q', turn.question);
+  root.appendChild(q);
+
+  /* status */
+  const status = el('div', 'status');
+  const live = el('div', 'live');
+  live.append(el('span', 'dot'), el('span', 'phase', 'Planning searches…'));
+  const toggle = el('button', 'steps-toggle hidden');
+  toggle.setAttribute('aria-expanded', 'false');
+  const steps = el('ol', 'steps hidden');
+  toggle.addEventListener('click', () => {
+    const open = steps.classList.toggle('hidden') === false;
+    toggle.setAttribute('aria-expanded', String(open));
+  });
+  status.append(live, toggle, steps);
+  root.appendChild(status);
+
+  /* sources — before the prose, deliberately: it is what makes the wait legible */
+  const sources = el('section', 'sources hidden');
+  const shead = el('div', 'srchead');
+  shead.append(el('span', 'eyebrow', 'Sources'), el('span', 'eyebrow srccount', ''));
+  const sgrid = el('div', 'srcgrid');
+  sources.append(shead, sgrid);
+  root.appendChild(sources);
+
+  /* prose */
+  const prose = el('div', 'prose');
+  const cursor = el('span', 'cursor hidden');
+  prose.appendChild(cursor);
+  root.appendChild(prose);
+
+  const err = el('div', 'err hidden');
+  root.appendChild(err);
+
+  /* the sections §7 says are the most tempting thing to delete */
+  const refusals = el('section', 'refusals hidden');
+  root.appendChild(refusals);
+
+  const related = el('section', 'related hidden');
+  root.appendChild(related);
+
+  const actions = el('div', 'actions hidden');
+  root.appendChild(actions);
+
+  turn.els = { root, live, phase: live.lastChild, toggle, steps, sources, sgrid,
+               scount: shead.lastChild, prose, cursor, err, refusals, related, actions };
+  return root;
+}
+
+/* ══ event handlers — one per name in ANSWER_EVENTS ════════════════════════ */
+
+function onStatus(turn, ev) {
+  const phase = String(ev && ev.phase || '');
+  const detail = ev && ev.detail ? String(ev.detail) : '';
+  turn.steps.push({ phase, detail });
+  const line = detail || PHASE_LABEL[phase] || phase;
+  turn.els.phase.textContent = line;
+  const li = el('li');
+  // The one place markup is built from a string rather than nodes. `detail`
+  // carries a search query the model wrote, so it goes through esc() — same
+  // guard, same shape as ui.html.
+  li.innerHTML = '<b>' + esc(phase) + '</b>' + esc(line);
+  turn.els.steps.appendChild(li);
+}
+
+function onSource(turn, ev) {
+  const i = Number(ev && ev.i) || (turn.sources.length + 1);
+  const url = safeUrl(ev && ev.url);
+  const domain = String((ev && ev.domain) || domainOf(url, ''));
+  const title = String((ev && ev.title) || domain || 'Untitled');
+  const rec = { i, url, domain, title };
+  turn.sources.push(rec);
+
+  const card = el('a', 'src');
+  if (url) { card.href = url; card.target = '_blank'; card.rel = 'noreferrer noopener'; }
+  const top = el('div', 'top');
+  top.appendChild(favicon(domain));
+  top.appendChild(el('span', 'dom', domain));
+  top.appendChild(el('span', 'num', String(i)));
+  card.append(top, el('div', 'ttl', title));
+  turn.els.sgrid.appendChild(card);
+
+  turn.els.sources.classList.remove('hidden');
+  turn.els.scount.textContent = String(turn.sources.length);
+
+  // Staggered, capped: eight sources should not take a second to appear.
+  const delay = Math.min(turn.sources.length - 1, 9) * 55;
+  setTimeout(() => card.classList.add('in'), 20 + delay);
+}
+
+/** Favicon, with a CSS-drawn monogram when the fetch fails (or is blocked). */
+function favicon(domain) {
+  const fb = el('span', 'fav-fb', (domain || '?').slice(0, 1));
+  if (!domain) return fb;
+  const img = el('img', 'fav');
+  img.alt = '';
+  img.loading = 'lazy';
+  img.referrerPolicy = 'no-referrer';
+  img.src = 'https://www.google.com/s2/favicons?sz=64&domain=' + encodeURIComponent(domain);
+  img.addEventListener('error', () => { img.replaceWith(fb); }, { once: true });
+  return img;
+}
+
+function onSpan(turn, ev) {
+  const id = Number(ev && ev.id);
+  if (!Number.isFinite(id)) return;
+  turn.spans.set(id, {
+    id,
+    sourceIndex: Number(ev.sourceIndex),
+    quote: String(ev.quote ?? ''),
+  });
+}
+
+/* ── the hot path ─────────────────────────────────────────────────────────
+   `delta` arrives many times a second. It must not read or rebuild anything
+   above the sentence it names. The end of this function is appendData(). */
+
+function sentenceOf(turn, n) {
+  let s = turn.sentences.get(n);
+  if (s) return s;
+  const node = el('span', 'sent pending');
+  node.dataset.n = String(n);
+  s = { n, node, raw: '', cut: 0, badges: [], verdict: 'pending', why: '' };
+  turn.sentences.set(n, s);
+  turn.order.push(n);
+  // Sentences are separated by a space; HTML collapses a doubled one, so this
+  // is safe whether or not the server's text carries its own leading space.
+  const prose = turn.els.prose;
+  prose.insertBefore(node, turn.els.cursor);
+  prose.insertBefore(document.createTextNode(' '), turn.els.cursor);
+  turn.els.cursor.classList.remove('hidden');
+  return s;
+}
+
+/** Markers are written " [1]." and read "…October¹." — the space in front of a
+ *  superscript is a rendering artefact, so it comes back out here rather than
+ *  being trimmed from the model's text (which we never rewrite). */
+function eatTrailingSpace(s) {
+  const last = s.node.lastChild;
+  if (last && last.nodeType === 3 && last.data.endsWith(' ')) {
+    last.deleteData(last.data.length - 1, 1);
+  }
+}
+
+function appendText(s, text) {
+  if (!text) return;
+  const last = s.node.lastChild;
+  if (last && last.nodeType === 3) last.appendData(text);   // ← the whole point
+  else s.node.appendChild(document.createTextNode(text));
+}
+
+const MARKER_RE = /^\s*\d{1,3}(\s*[,;]\s*\d{1,3})*\s*$/;
+
+/**
+ * Consume as much of the accumulated sentence text as is unambiguous.
+ *
+ * A marker can be split across deltas ("[" then "2]"), so an unclosed bracket
+ * is HELD rather than printed — otherwise a stray "[" flashes on screen and
+ * then has to be un-printed, which means rewriting text already committed to
+ * the DOM. It is released as literal text after 32 characters with no "]",
+ * which is long enough for any marker and short enough that real prose
+ * containing a bracket does not stall.
+ */
+function drain(turn, s) {
+  const raw = s.raw;
+  let i = s.cut;
+  while (i < raw.length) {
+    const open = raw.indexOf('[', i);
+    if (open === -1) { appendText(s, raw.slice(i)); i = raw.length; break; }
+    if (open > i) { appendText(s, raw.slice(i, open)); i = open; }
+    const close = raw.indexOf(']', open);
+    if (close === -1) {
+      if (raw.length - open > 32) { appendText(s, '['); i = open + 1; continue; }
+      break;                                    // wait for more text
+    }
+    const inner = raw.slice(open + 1, close);
+    if (MARKER_RE.test(inner)) {
+      eatTrailingSpace(s);
+      for (const part of inner.split(/[,;]/)) addBadge(turn, s, Number(part.trim()));
+    } else {
+      appendText(s, raw.slice(open, close + 1)); // "[sic]" is prose, not a marker
+    }
+    i = close + 1;
+  }
+  s.cut = i;
+}
+
+function feedDelta(turn, n, text) {
+  if (!Number.isFinite(n)) return;
+  const s = sentenceOf(turn, n);
+  s.raw += text;
+  drain(turn, s);
+}
+
+function addBadge(turn, s, id) {
+  if (!Number.isFinite(id)) return;
+  const b = el('sup', 'cb ' + s.verdict, String(id));
+  b.dataset.span = String(id);
+  b.dataset.turn = turn.id;
+  b.dataset.n = String(s.n);
+  b.tabIndex = 0;
+  b.setAttribute('role', 'button');
+  b.setAttribute('aria-label', 'Citation ' + id + ', checking');
+  s.badges.push(b);
+  s.node.appendChild(b);
+}
+
+/**
+ * pending → confirmed | flagged.
+ *
+ * The class swap is the entire mechanism: the badge is already in the DOM with
+ * `.pending`, and the verdict replaces one class on each badge plus one on the
+ * sentence. No text moves, so a settle mid-stream cannot disturb the prose the
+ * reader is in the middle of.
+ */
+function onVerdict(turn, ev) {
+  const n = Number(ev && ev.n);
+  const v = (ev && ev.verdict) === 'flagged' ? 'flagged' : 'confirmed';
+  const s = sentenceOf(turn, n);
+  s.verdict = v;
+  s.why = ev && ev.why ? String(ev.why) : '';
+  s.node.classList.remove('pending');
+  s.node.classList.add(v);
+  for (const b of s.badges) {
+    b.classList.remove('pending');
+    b.classList.add(v);
+    b.setAttribute('aria-label', 'Citation ' + b.dataset.span + ', ' +
+      (v === 'flagged' ? 'could not be confirmed' : 'confirmed'));
+  }
+}
+
+function showError(turn, msg) {
+  const e = turn.els.err;
+  e.replaceChildren(el('b', null, 'Stopped'), document.createTextNode(String(msg)));
+  e.classList.remove('hidden');
+  turn.els.live.classList.add('hidden');
+  turn.els.cursor.classList.add('hidden');
+}
+
+/* ══ done: collapse the status, surface the refusals ═══════════════════════ */
+
+function finishTurn(turn, done) {
+  turn.doneAt = Date.now();
+  turn.els.live.classList.add('hidden');
+  turn.els.cursor.classList.add('hidden');
+  // A replayed answer has no steps to re-open, and "Completed 0 steps" is a
+  // button that lies about having something behind it.
+  if (turn.steps.length > 0) {
+    turn.els.toggle.textContent = 'Completed ' + turn.steps.length + ' step' +
+      (turn.steps.length === 1 ? '' : 's');
+    turn.els.toggle.classList.remove('hidden');
+  }
+
+  renderRefusals(turn, done);
+  renderRelated(turn, done);
+  renderActions(turn, done);
+
+  if (done && done.threadId) S.threadId = String(done.threadId);
+  S.live = null;
+  setBusy(false);
+}
+
+/**
+ * §7.1 — Perplexity shows you an answer; we show what we refused.
+ *
+ * Two of the three lists here are derived from the wire contract itself: a
+ * `sentence` verdict of `flagged` IS a refusal to vouch, and it is guaranteed
+ * to arrive. `dropped` / `unanswered` are read off `done` if the pipeline
+ * chooses to carry them — read defensively, never required, never invented.
+ *
+ * When nothing was refused the section still renders, saying so in words. A
+ * gate whose refusals are invisible teaches nobody anything, and an empty
+ * section that disappears is indistinguishable from a gate that never ran.
+ */
+function renderRefusals(turn, done) {
+  const box = turn.els.refusals;
+  box.replaceChildren();
+
+  const flagged = turn.order
+    .map((n) => turn.sentences.get(n))
+    .filter((s) => s && s.verdict === 'flagged');
+  const has = (k) => done != null && done[k] !== undefined && done[k] !== null;
+  const dropped = Array.isArray(done && done.dropped) ? done.dropped : [];
+  const unanswered = Array.isArray(done && done.unanswered) ? done.unanswered : [];
+
+  box.appendChild(el('h3', null, 'What this answer does not carry'));
+  box.appendChild(el('p', 'why-here',
+    'Kept on screen on purpose. A short answer you can act on beats a fluent one you cannot check.'));
+
+  /* 1 · sentences whose citations did not vouch for them */
+  const g1 = el('div', 'rgroup');
+  g1.appendChild(el('span', 'eyebrow', 'Could not be confirmed'));
+  if (turn.replayed) {
+    g1.appendChild(el('div', 'none',
+      'Per-sentence verdicts are not stored with an answer. Ask it again to re-run the checks.'));
+  } else if (!flagged.length) {
+    g1.appendChild(el('div', 'none', 'None — every sentence matched the spans it cites.'));
+  } else {
+    for (const s of flagged) {
+      const d = el('div', 'drop');
+      d.appendChild(el('span', 'qt', stripMarkers(s.raw)));
+      d.appendChild(el('em', null, s.why ||
+        'Could not be confirmed from what it cites — the quote is real, the claim goes further.'));
+      g1.appendChild(d);
+    }
+  }
+  box.appendChild(g1);
+
+  /* 2 · points the verbatim gate refused outright */
+  const g2 = el('div', 'rgroup');
+  g2.appendChild(el('span', 'eyebrow', 'Dropped'));
+  if (!dropped.length) {
+    g2.appendChild(el('div', 'none', has('dropped')
+      ? 'Nothing was dropped on this run.'
+      : 'Not reported by this run.'));
+  } else {
+    for (const d of dropped) {
+      const row = el('div', 'drop');
+      row.appendChild(el('b', null, String(d && d.claim || d)));
+      if (d && d.why) row.appendChild(el('em', null, String(d.why)));
+      g2.appendChild(row);
+    }
+  }
+  box.appendChild(g2);
+
+  /* 3 · the hole, named */
+  const g3 = el('div', 'rgroup');
+  g3.appendChild(el('span', 'eyebrow', 'Not answerable from these sources'));
+  if (!unanswered.length) {
+    g3.appendChild(el('div', 'none', has('unanswered')
+      ? 'The retrieved pages covered the question as asked.'
+      : 'Not reported by this run.'));
+  } else {
+    for (const u of unanswered) g3.appendChild(el('div', 'drop', String(u)));
+  }
+  box.appendChild(g3);
+
+  box.classList.remove('hidden');
+}
+
+function renderRelated(turn, done) {
+  const rel = Array.isArray(done && done.related) ? done.related : [];
+  const box = turn.els.related;
+  box.replaceChildren();
+  if (!rel.length) { box.classList.add('hidden'); return; }
+  box.appendChild(el('span', 'eyebrow', 'Related'));
+  for (const r of rel) {
+    const b = el('button', 'rq');
+    b.appendChild(el('span', 'plus', '+'));
+    b.appendChild(document.createTextNode(String(r)));
+    b.addEventListener('click', () => submit(String(r)));
+    box.appendChild(b);
+  }
+  box.classList.remove('hidden');
+}
+
+function renderActions(turn, done) {
+  const box = turn.els.actions;
+  box.replaceChildren();
+
+  const copy = el('button', null, 'Copy answer');
+  copy.addEventListener('click', () => copyText(plainAnswer(turn, false), 'Answer copied'));
+  const copyCited = el('button', null, 'Copy with sources');
+  copyCited.addEventListener('click', () => copyText(plainAnswer(turn, true), 'Copied with sources'));
+  const again = el('button', null, 'Ask again');
+  again.addEventListener('click', () => submit(turn.question));
+  // §7.2 — thread bloat with no fork is their top complaint. Fork is first-class.
+  const fork = el('button', null, 'Fork from here');
+  fork.addEventListener('click', () => { const q = turn.question; resetToEmpty(); submit(q); });
+
+  box.append(copy, copyCited, again, fork);
+
+  const bits = [];
+  if (done && Number.isFinite(Number(done.costCents))) {
+    bits.push((Number(done.costCents)).toFixed(2) + '¢');
+  }
+  if (done && Number(done.flagged) > 0) bits.push(Number(done.flagged) + ' flagged');
+  bits.push(turn.sources.length + ' sources');
+  box.appendChild(el('span', 'cost', bits.join(' · ')));
+  box.classList.remove('hidden');
+}
+
+function plainAnswer(turn, withSources) {
+  const prose = turn.order.map((n) => turn.sentences.get(n).raw).join(' ').replace(/\s+/g, ' ').trim();
+  if (!withSources) return stripMarkers(prose);
+  const lines = [turn.question, '', prose, ''];
+  for (const s of turn.sources) lines.push('[' + s.i + '] ' + s.title + ' — ' + (s.url || s.domain));
+  const flagged = turn.order.map((n) => turn.sentences.get(n)).filter((s) => s.verdict === 'flagged');
+  if (flagged.length) {
+    lines.push('', 'Could not be confirmed:');
+    for (const f of flagged) lines.push('- ' + f.raw.trim() + (f.why ? '  (' + f.why + ')' : ''));
+  }
+  return lines.join('\n');
+}
+
+function copyText(text, msg) {
+  const done = () => toast(msg);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => toast('Could not copy'));
+  } else {
+    const ta = el('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); done(); } catch { toast('Could not copy'); }
+    ta.remove();
+  }
+}
+
+/* ══ citation tooltip ══════════════════════════════════════════════════════
+   One floating node, not one per badge. A long answer can carry sixty badges;
+   sixty hidden cards is sixty subtrees to lay out for a hover that may never
+   happen. */
+
+const TURNS = new Map();   // turn.id -> turn
+
+const VERDICT_COPY = {
+  pending: ['Checking', 'Reading this sentence against the span it cites.'],
+  confirmed: ['Confirmed', 'The quote is verbatim on the page we fetched, and the figures in this sentence match it. That is not a claim the sentence is true.'],
+  // The distinction this wording protects is load-bearing. `flagged` is NOT
+  // "false" — it is "we could not confirm this from what it cites", which is a
+  // weaker and different statement, and rendering it as a lie is the failure.
+  stored: ['Saved', 'From a stored answer. The quote is the one that was checked when it was written; the per-sentence verdicts were not kept.'],
+  flagged: ['Unconfirmed', 'Could not be confirmed from what it cites. The source is real; the sentence goes further than the quoted span does.'],
+};
+
+let tipFor = null;
+
+function showTip(badge) {
+  const turn = TURNS.get(badge.dataset.turn);
+  if (!turn) return;
+  const id = Number(badge.dataset.span);
+  const span = turn.spans.get(id);
+  const sent = turn.sentences.get(Number(badge.dataset.n));
+  const verdict = sent ? sent.verdict : 'pending';
+  const src = span ? turn.sources.find((s) => s.i === span.sourceIndex) : null;
+
+  const tip = $('#tip');
+  tip.replaceChildren();
+
+  const top = el('div', 'top');
+  top.appendChild(favicon(src ? src.domain : ''));
+  top.appendChild(el('span', 'dom', src ? src.domain : 'source ' + (span ? span.sourceIndex : '?')));
+  tip.appendChild(top);
+  tip.appendChild(el('div', 'ttl', src ? src.title : 'Source not yet received'));
+
+  if (span && span.quote) tip.appendChild(el('blockquote', null, '“' + span.quote + '”'));
+  else tip.appendChild(el('blockquote', null, 'The quoted span for this marker has not arrived yet.'));
+
+  const v = el('div', 'verdict ' + verdict);
+  v.appendChild(el('b', null, VERDICT_COPY[verdict][0]));
+  v.appendChild(document.createTextNode(
+    verdict === 'flagged' && sent && sent.why ? sent.why : VERDICT_COPY[verdict][1]));
+  tip.appendChild(v);
+
+  if (src && src.url) tip.appendChild(el('span', 'open', 'Click to open ' + src.domain + ' ↗'));
+
+  tip.classList.add('on');
+  tipFor = badge;
+  positionTip(badge);
+}
+
+function positionTip(badge) {
+  const tip = $('#tip');
+  const r = badge.getBoundingClientRect();
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let left = r.left + r.width / 2 - w / 2;
+  left = Math.max(12, Math.min(left, window.innerWidth - w - 12));
+  let top = r.top - h - 9;
+  if (top < 12) top = r.bottom + 9;                     // flip under when tight
+  tip.style.left = Math.round(left) + 'px';
+  tip.style.top = Math.round(top) + 'px';
+}
+
+function hideTip() {
+  $('#tip').classList.remove('on');
+  tipFor = null;
+}
+
+document.addEventListener('mouseover', (e) => {
+  const b = e.target.closest && e.target.closest('.cb');
+  if (b) showTip(b);
+  else if (tipFor && !(e.target.closest && e.target.closest('.tip'))) hideTip();
+});
+document.addEventListener('focusin', (e) => {
+  const b = e.target.closest && e.target.closest('.cb');
+  if (b) showTip(b); else hideTip();
+});
+window.addEventListener('scroll', () => { if (tipFor) positionTip(tipFor); }, true);
+window.addEventListener('resize', () => { if (tipFor) positionTip(tipFor); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideTip(); });
+
+function openBadge(badge) {
+  const turn = TURNS.get(badge.dataset.turn);
+  if (!turn) return;
+  const span = turn.spans.get(Number(badge.dataset.span));
+  const src = span ? turn.sources.find((s) => s.i === span.sourceIndex) : null;
+  const url = src && safeUrl(src.url);
+  if (url) window.open(url, '_blank', 'noopener,noreferrer');
+  else toast('No URL for that citation yet');
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('.cb');
+  if (b) openBadge(b);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const b = e.target.closest && e.target.closest('.cb');
+  if (!b) return;
+  e.preventDefault();
+  openBadge(b);
+});
+
+/* ══ the run ═══════════════════════════════════════════════════════════════ */
+
+function setBusy(busy) {
+  $('#go0').disabled = busy;
+  $('#go1').disabled = busy;
+  $('#q1').placeholder = busy ? 'Working…' : 'Ask a follow-up…';
+}
+
+function stopStream() {
+  if (S.es) { try { S.es.close(); } catch { /* already closed */ } S.es = null; }
+  for (const t of S.demoTimers) clearTimeout(t);
+  S.demoTimers = [];
+}
+
+/** Keeps the newest turn in view while it streams, unless the reader has
+ *  scrolled up to read something — then leave them where they are. */
+const SCROLLER = $('#scroll');
+function nudgeScroll(force) {
+  const sc = SCROLLER;
+  const near = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 220;
+  if (force || near) sc.scrollTop = sc.scrollHeight;
+}
+
+function submit(raw) {
+  const q = String(raw || '').trim();
+  if (!q) return;
+  if (S.live) { toast('Still working on the last one'); return; }
+  if (q.length < 8) { toast('Ask a fuller question — a few words cannot be turned into a search'); return; }
+
+  stopStream();
+  enterThreadView();
+
+  const turn = newTurn(q);
+  S.turns.push(turn);
+  S.live = turn;
+  TURNS.set(turn.id, turn);
+  $('#turns').appendChild(buildTurn(turn));
+  nudgeScroll(true);
+  setBusy(true);
+
+  if (S.demo) { runDemo(turn); return; }
+
+  const url = S.endpoint + '?q=' + encodeURIComponent(q) +
+    (S.threadId ? '&thread=' + encodeURIComponent(S.threadId) : '') +
+    (S.mode === 'verified' ? '&mode=verified' : '');
+
+  let got = 0;
+  const es = new EventSource(url);
+  S.es = es;
+
+  const on = (name, fn) => es.addEventListener(name, (e) => {
+    got++;
+    let data = null;
+    try { data = JSON.parse(e.data); } catch { data = e.data; }
+    fn(data);
+    nudgeScroll(false);
+  });
+
+  on('status', (d) => onStatus(turn, d));
+  on('source', (d) => onSource(turn, d));
+  on('span', (d) => onSpan(turn, d));
+  on('delta', (d) => feedDelta(turn, Number(d && d.n), String((d && d.text) ?? '')));
+  on('sentence', (d) => onVerdict(turn, d));
+  on('error_msg', (d) => {
+    showError(turn, typeof d === 'string' ? d : (d && d.message) || 'The run stopped.');
+    finishTurn(turn, null);
+    stopStream();
+  });
+  on('done', (d) => { finishTurn(turn, d); stopStream(); nudgeScroll(false); });
+
+  // `error` is EventSource's transport failure, never an application error —
+  // which is exactly why the contract calls the other one `error_msg`.
+  es.onerror = () => {
+    if (turn.doneAt) { stopStream(); return; }
+    stopStream();
+    showError(turn, got === 0
+      ? 'Could not reach ' + S.endpoint + '. The answer route may not be running — try ?demo=1 to see the interface with scripted events.'
+      : 'The connection dropped mid-answer. Everything above arrived; the rest did not.');
+    finishTurn(turn, null);
+  };
+}
+
+/* ══ ?demo=1 — the same handlers, a scripted stream ════════════════════════
+   Not a mock of the UI: a mock of the SERVER. Every line below is one of the
+   seven events from `events.ts`, in the shape the contract declares, dispatched
+   through the same functions the live EventSource calls. If the demo looks
+   right, the wiring is right. */
+
+const DEMO_THREADS = [
+  { id: 'd1', title: 'Snow removal — October launch?', createdAt: '2026-08-30' },
+  { id: 'd2', title: 'Jiffy pricing page, what changed', createdAt: '2026-08-28' },
+  { id: 'd3', title: 'Which category has the least competition', createdAt: '2026-08-24' },
+];
+
+const DEMO_SOURCES = [
+  { i: 1, url: 'https://www.blogto.com/city/2025/09/toronto-snow-removal-contracts/', domain: 'blogto.com', title: 'When Toronto homeowners actually book snow removal' },
+  { i: 2, url: 'https://www.jiffyondemand.com/services/snow-removal', domain: 'jiffyondemand.com', title: 'Snow Removal — Jiffy seasonal packages' },
+  { i: 3, url: 'https://www.taskrabbit.ca/toronto', domain: 'taskrabbit.ca', title: 'TaskRabbit Toronto — browse tasks near you' },
+  { i: 4, url: 'https://trends.google.com/trends/explore?q=snow%20removal%20toronto', domain: 'trends.google.com', title: 'snow removal toronto — Google Trends, 12 months' },
+  { i: 5, url: 'https://www.theweathernetwork.com/ca/winter-forecast/ontario', domain: 'theweathernetwork.com', title: 'Ontario winter forecast and first-snow outlook' },
+  { i: 6, url: 'https://www.statcan.gc.ca/en/subjects/household-spending', domain: 'statcan.gc.ca', title: 'Household spending on home maintenance services' },
+];
+
+const DEMO_SPANS = [
+  { id: 1, sourceIndex: 1, quote: 'Most seasonal contracts in the GTA are signed between mid-September and the first week of November, with sign-ups peaking in the first two weeks of October.' },
+  { id: 2, sourceIndex: 2, quote: 'Snow removal is offered as a seasonal package. Per-visit pricing is quoted after an address check.' },
+  { id: 3, sourceIndex: 3, quote: 'Browse tasks: Furniture Assembly, Mounting, Moving Help, Cleaning, Home Repairs, Yard Work.' },
+  { id: 4, sourceIndex: 4, quote: 'Interest over time for “snow removal toronto” rises from 21 in the last week of September to 68 by the third week of October.' },
+  { id: 5, sourceIndex: 5, quote: 'The first accumulating snowfall in southern Ontario typically arrives in the second half of November.' },
+  { id: 6, sourceIndex: 6, quote: 'Canadian households spent an average of $1,161 on home maintenance and repair services.' },
+];
+
+const DEMO_SENTENCES = [
+  { text: 'Toronto homeowners sign seasonal snow-clearing contracts between mid-September and early November, and sign-ups peak in the first two weeks of October [1].',
+    verdict: 'confirmed' },
+  { text: 'Jiffy already sells snow removal as a seasonal package rather than an on-demand task, and quotes per-visit pricing only after an address check [2].',
+    verdict: 'confirmed' },
+  { text: 'TaskRabbit does not list a snow category in Toronto at all, which leaves the on-demand slot open [3].',
+    verdict: 'confirmed' },
+  { text: 'Search interest for “snow removal toronto” rises from 21 in the last week of September to 68 by the third week of October [4], while the first accumulating snowfall usually arrives in the second half of November [5].',
+    verdict: 'confirmed' },
+  { text: 'Demand therefore builds roughly six weeks before the first snow, so a campaign launched in late September would reach homeowners while they are still choosing a provider [1][4].',
+    verdict: 'flagged',
+    why: 'The sources establish when contracts are signed and when interest rises. Neither says that reaching homeowners earlier wins the contract — that step is the model’s, not the page’s.' },
+];
+
+const DEMO_DONE = {
+  costCents: 0.24,
+  threadId: 'd1',
+  messageId: 'm1',
+  flagged: 1,
+  related: [
+    'What does a GTA snow-clearing visit actually cost a homeowner?',
+    'Did Jiffy’s seasonal package sell out last winter?',
+    'How early do Toronto landscapers start selling winter contracts?',
+  ],
+  dropped: [
+    { claim: 'Toronto households spend about $1,200 a year on snow removal alone.',
+      why: 'The cited page gives $1,161 for all home maintenance and repair, not snow removal. The number is real; the claim narrows it to something the page does not say.' },
+    { claim: 'Jiffy raised its snow-removal prices 12% this year.',
+      why: 'No fetched page contains a price for last season, so the comparison has nothing to stand on.' },
+  ],
+  unanswered: [
+    'What a snow-clearing visit costs per visit in the GTA.',
+    'How many Toronto households buy seasonal contracts versus per-visit clearing.',
+  ],
+};
+
+function at(ms, fn) { S.demoTimers.push(setTimeout(fn, ms)); }
+
+function runDemo(turn) {
+  let t = 0;
+
+  at(t += 90, () => onStatus(turn, { phase: 'planning' }));
+  at(t += 560, () => onStatus(turn, { phase: 'searching', detail: 'tavily · “toronto snow removal seasonal contract timing”' }));
+  at(t += 420, () => onStatus(turn, { phase: 'searching', detail: 'tavily · “jiffy snow removal pricing toronto”' }));
+  at(t += 380, () => onStatus(turn, { phase: 'reading', detail: 'Reading sources…' }));
+
+  // Sources land staggered, before a word of prose — this is the whole staging.
+  DEMO_SOURCES.forEach((s, i) => at(t + 140 + i * 175, () => { onSource(turn, s); nudgeScroll(false); }));
+  t += 140 + DEMO_SOURCES.length * 175;
+
+  at(t += 240, () => onStatus(turn, { phase: 'attributing', detail: 'Pulling quotable spans…' }));
+  DEMO_SPANS.forEach((s, i) => at(t + 120 + i * 60, () => onSpan(turn, s)));
+  t += 120 + DEMO_SPANS.length * 60;
+
+  at(t += 340, () => onStatus(turn, { phase: 'writing' }));
+  t += 240;
+
+  // Chunked into token-sized pieces so the render loop is exercised the way a
+  // real stream exercises it — including a marker split across two deltas.
+  DEMO_SENTENCES.forEach((sent, idx) => {
+    const n = idx + 1;
+    for (const piece of chunk(sent.text)) {
+      t += 22 + Math.random() * 34;
+      const ms = t;
+      S.demoTimers.push(setTimeout(() => { feedDelta(turn, n, piece); nudgeScroll(false); }, ms));
+    }
+    // The verdict settles about one sentence behind the writing.
+    const settleAt = t + 900;
+    S.demoTimers.push(setTimeout(() => {
+      if (idx === DEMO_SENTENCES.length - 1) onStatus(turn, { phase: 'checking' });
+      onVerdict(turn, { n, verdict: sent.verdict, why: sent.why });
+    }, settleAt));
+  });
+
+  at(t + 1500, () => onStatus(turn, { phase: 'done' }));
+  at(t + 1700, () => { finishTurn(turn, DEMO_DONE); nudgeScroll(false); });
+}
+
+/** Split into 2–7 character pieces, deliberately cutting through "[4]" so the
+ *  held-bracket path in `drain` is exercised every single run. */
+function chunk(text) {
+  const out = [];
+  let i = 0;
+  while (i < text.length) {
+    const n = 2 + Math.floor(Math.random() * 6);
+    out.push(text.slice(i, i + n));
+    i += n;
+  }
+  return out;
+}
+
+/* ══ boot ══════════════════════════════════════════════════════════════════ */
+
+void loadThreads();
+$('#q0').focus();
+
+// A question in the URL runs on load, so a link can carry one.
+const initial = new URLSearchParams(location.search).get('q');
+if (initial) submit(initial);
+else if (S.demo) { $('#q0').value = SUGGESTED[0]; }
+</script>
+</body>
+</html>

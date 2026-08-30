@@ -28,9 +28,7 @@ import { retrieve, citationFor } from '@tmos/brain';
 import { activeSeasons, composeDraft, type DraftInputs } from '@tmos/draft';
 import { packById, DEFAULT_PACK_ID } from '@tmos/packs';
 
-const send = (res: ServerResponse, event: string, data: unknown): void => {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-};
+import { send } from './sse.js';
 
 /**
  * What to ask the Brain.

@@ -16,9 +16,7 @@ import { loadEnv, type BudgetLimits } from '@tmos/shared';
 import { createAsk, createResearchReader, searchProvidersFromEnv } from '@tmos/adapters';
 import { research } from '@tmos/research';
 
-const send = (res: ServerResponse, event: string, data: unknown): void => {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-};
+import { send } from './sse.js';
 
 export async function runResearch(res: ServerResponse, question: string): Promise<void> {
   res.writeHead(200, {

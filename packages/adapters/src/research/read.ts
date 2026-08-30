@@ -30,6 +30,30 @@ export function toText(html: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    /**
+     * AN UNDECODABLE BYTE BECOMES A SPACE, NOT A GLYPH.
+     *
+     * Pages routinely declare `charset=UTF-8` and then carry bytes that are not
+     * valid UTF-8 — a CMS storing content pasted out of Word is the usual
+     * source. `response.text()` is right to emit U+FFFD for those, and the page
+     * is the thing that is broken. But the bytes that break are almost always
+     * punctuation, and the punctuation that matters most here is the en-dash in
+     * a price range.
+     *
+     * Observed, 2026-08-31: TaskRabbit's own pricing table reaches us as
+     * "Furniture Assembly $40\uFFFD$70". A model cannot reproduce a replacement
+     * character, so it quotes a normal dash instead, and the substring check
+     * correctly refuses the span as reconstructed. The gate was working; the
+     * document was unquotable. Every price on that page was silently unciteable.
+     *
+     * A space is the honest substitute. Deleting the character would fuse
+     * "$40$70" into one token and invent a figure; guessing a dash would put
+     * characters on the page that were never there. A space preserves the
+     * boundary, and because this runs BEFORE the text is handed to a model and
+     * before any span is checked against it, all three see the same string —
+     * which is the property the whole citation guarantee rests on.
+     */
+    .replace(/\uFFFD/g, ' ')
     .replace(/[ \t\u00A0]+/g, ' ')
     .replace(/\n\s*\n\s*\n+/g, '\n\n')
     .trim();

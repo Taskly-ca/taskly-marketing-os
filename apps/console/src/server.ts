@@ -28,11 +28,22 @@ import { fileURLToPath } from 'node:url';
 
 import { closePool } from '@tmos/db';
 import { SEED_QUESTIONS, writePrediction, PredictionRejected } from '@tmos/intel';
-import { createPostgresPredictionStore, createResolverContext } from '@tmos/adapters';
+import {
+  NotFoundError,
+  archiveThread,
+  createPostgresPredictionStore,
+  createResolverContext,
+  deleteThread,
+  getThread,
+  listThreads,
+  renameThread,
+} from '@tmos/adapters';
 
 import { readState } from './queries.js';
 import { runResearch } from './research-route.js';
 import { runDraft } from './draft-route.js';
+import { runAnswer } from './answer-route.js';
+import { primeBudget } from './budget-boot.js';
 import { Runner, RunBusy, isStage } from './runner.js';
 
 /** dist/ sits one level under the app, so the repo root is three up. */
@@ -40,6 +51,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(HERE, '..');
 const REPO_ROOT = resolve(APP_ROOT, '../..');
 const UI = resolve(APP_ROOT, 'src/ui.html');
+/** The answer engine. `/` since 2026-08-31; the dashboard moved to /classic. */
+const APP = resolve(APP_ROOT, 'src/app.html');
 
 const HUMAN_AUTHOR = 'human:nishant';
 const runner = new Runner(REPO_ROOT);
@@ -158,11 +171,82 @@ async function forecast(res: ServerResponse, body: Record<string, unknown>): Pro
   return text(res, 200, `Recorded — ${q.key} at ${n}. It resolves on ${q.resolve_at.slice(0, 10)}.`);
 }
 
+/**
+ * `/api/threads/<uuid>` and its two verbs.
+ *
+ * The id is matched as a UUID rather than as `[^/]+` so a path that is not one
+ * is a 404 here instead of a `22P02` from Postgres several layers down — the
+ * store refuses a non-uuid anyway, but a route that hands the database
+ * arbitrary path segments is the shape to avoid whether or not it is safe today.
+ */
+const THREAD_PATH = /^\/api\/threads\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/(rename|archive))?$/i;
+
+async function threadRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+  action: string | null,
+): Promise<void> {
+  const method = req.method ?? 'GET';
+  try {
+    if (action === null && method === 'GET') {
+      const detail = await getThread(id);
+      return detail === null ? text(res, 404, `unknown thread: ${id}`) : json(res, 200, detail);
+    }
+    if (action === null && method === 'DELETE') {
+      // Hard delete, cascading to messages and citations. `ai_usage_log` is
+      // untouched on purpose: the spend happened, and a ledger that shrinks
+      // when someone tidies up is not a ledger.
+      await deleteThread(id);
+      return json(res, 200, { deleted: id });
+    }
+    if (action === 'rename' && method === 'POST') {
+      const title = String((await readBody(req))['title'] ?? '').trim();
+      if (title === '') return text(res, 400, 'a title is required — a blank one is refused by the store');
+      // A rename also stamps `title_source = 'user'`, which is what stops a
+      // later auto-titler from overwriting it.
+      await renameThread(id, title);
+      return json(res, 200, { id, title });
+    }
+    if (action === 'archive' && method === 'POST') {
+      // Soft delete, and undoable: `{"archived": false}` puts it back. That
+      // reversibility is the whole difference from DELETE.
+      const archived = (await readBody(req))['archived'] !== false;
+      await archiveThread(id, archived ? new Date().toISOString() : null);
+      return json(res, 200, { id, archived });
+    }
+  } catch (err) {
+    if (err instanceof NotFoundError) return text(res, 404, err.message);
+    throw err;
+  }
+  return text(res, 405, `${method} is not allowed on ${threadPath(id, action)}`);
+}
+
+const threadPath = (id: string, action: string | null): string =>
+  action === null ? `/api/threads/${id}` : `/api/threads/${id}/${action}`;
+
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const path = url.pathname;
 
   if (path === '/' || path === '/index.html') {
+    // The answer engine is the front door now. Read per request rather than at
+    // boot so editing the page and hitting reload shows the edit — which is the
+    // whole reason it is a file and not a template string.
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(readFileSync(APP, 'utf8'));
+    return;
+  }
+
+  /**
+   * The old dashboard, kept whole rather than ported.
+   *
+   * It carries five tabs the answer engine does not replace — findings, the
+   * competitor fact table, the forecast ledger and its write form, sources, and
+   * the stage runner. Deleting it to look tidy would delete working surfaces,
+   * so it stays here until each has a home in the new shell.
+   */
+  if (path === '/classic') {
     // Read per request rather than at boot: editing the page and hitting
     // reload should show the edit, which is the whole point of it being a file.
     const html = readFileSync(UI, 'utf8');
@@ -213,6 +297,25 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return runResearch(res, url.searchParams.get('q') ?? '');
   }
 
+  if (path === '/api/answer') {
+    // GET, because EventSource cannot POST. `thread` continues a conversation;
+    // its absence starts one.
+    return runAnswer(res, url.searchParams.get('q') ?? '', url.searchParams.get('thread'));
+  }
+
+  if (path === '/api/threads' && (req.method ?? 'GET') === 'GET') {
+    // Archived threads are excluded by default, and asking for them changes the
+    // SQL rather than a parameter — `thread_active_idx` is partial, and the
+    // planner only uses it when the predicate is written literally.
+    const includeArchived = url.searchParams.get('archived') === '1';
+    return json(res, 200, await listThreads({ includeArchived }));
+  }
+
+  const thread = THREAD_PATH.exec(path);
+  if (thread) {
+    return threadRoute(req, res, thread[1] ?? '', thread[2] ?? null);
+  }
+
   if (path === '/api/run' && req.method === 'POST') {
     const body = await readBody(req);
     const stage = String(body['stage'] ?? 'all');
@@ -249,6 +352,20 @@ const PORT = Number(process.env['TMOS_CONSOLE_PORT'] ?? 4478);
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`\n  TMOS console → http://127.0.0.1:${PORT}\n`);
   console.log('  Nothing is scheduled. A pass runs when you press one.\n');
+  /**
+   * REBUILD THE DAY'S SPEND BEFORE THE FIRST QUESTION.
+   *
+   * `BudgetState` is in-memory and per-process, so the $20/day ceiling has
+   * until now reset on every restart — migration 012 created `ai_usage_log`
+   * for exactly this and wrote the query into its own table comment, and
+   * nothing ever ran it. Done here rather than lazily so the founder does not
+   * wait for the read mid-answer; `dailyBudget()` reconstructs anyway if this
+   * could not, so a database that is not up yet costs a warning, not a boot.
+   */
+  void primeBudget().catch((err: unknown) => {
+    const why = err instanceof Error ? err.message : String(err);
+    console.error(`budget: could not reconstruct today's spend at boot (${why})`);
+  });
 });
 
 const shutdown = (): void => {
