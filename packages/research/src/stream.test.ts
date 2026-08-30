@@ -12,7 +12,15 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CitableSpan } from './attribute.js';
-import type { DeltaEvent, SentenceEvent, SourceEvent, SpanEvent, StatusEvent } from './events.js';
+import type {
+  ConversationTurn,
+  DeltaEvent,
+  SentenceEvent,
+  SourceEvent,
+  SpanEvent,
+  StatusEvent,
+} from './events.js';
+import type { StreamedAnswer } from './stream.js';
 import { checkSentence, streamAnswer } from './stream.js';
 import type {
   AskPort,
@@ -66,15 +74,31 @@ const read: ReadPort = {
   read: async (url: string): Promise<ReadDoc | null> => DOCS.find((d) => d.url === url) ?? null,
 };
 
-/** Plans, then extracts. Dispatches on the system prompt so one fake serves
- *  both non-streaming calls the pipeline makes. */
-const ask = (opts: { queries?: string[]; spans?: unknown[] } = {}): AskPort => ({
+/** Plans, extracts, then proposes. Dispatches on the system prompt so one fake
+ *  serves all three non-streaming calls the pipeline makes. */
+const ask = (
+  opts: {
+    queries?: string[];
+    spans?: unknown[];
+    standalone?: string;
+    reuse?: boolean;
+    related?: unknown[];
+  } = {},
+): AskPort => ({
   ask: async (system: string): Promise<AskResult | null> => {
     if (system.includes('search queries')) {
       return {
-        text: JSON.stringify({ queries: opts.queries ?? ['jiffy toronto pricing'], unanswerable: [] }),
+        text: JSON.stringify({
+          queries: opts.queries ?? ['jiffy toronto pricing'],
+          unanswerable: [],
+          ...(opts.standalone === undefined ? {} : { standalone: opts.standalone }),
+          ...(opts.reuse === undefined ? {} : { reuse: opts.reuse }),
+        }),
         costCents: 0.01,
       };
+    }
+    if (system.includes('ask NEXT')) {
+      return { text: JSON.stringify({ questions: opts.related ?? [] }), costCents: 0.02 };
     }
     return {
       text: JSON.stringify({
@@ -220,7 +244,8 @@ describe('streamAnswer — the happy path', () => {
     ]);
     expect(answer.flagged).toBe(0);
     expect(answer.note).toBe('');
-    expect(answer.costCents).toBeCloseTo(0.08, 6);
+    // plan 0.01 + attribute 0.02 + generate 0.05 + related 0.02.
+    expect(answer.costCents).toBeCloseTo(0.10, 6);
   });
 
   it('emits every phase in order, sources before writing', async () => {
@@ -392,5 +417,292 @@ describe('streamAnswer — when there is nothing to say', () => {
     });
     expect(answer.sentences.map((s) => s.verdict)).toEqual(['confirmed', 'flagged']);
     expect(answer.text).toBe(full);
+  });
+});
+
+/* ── conversation ─────────────────────────────────────────────────────────── */
+
+/**
+ * The follow-up half, and the one thing in it that is genuinely dangerous.
+ *
+ * Everything above tests a single turn, where the only thing a sentence can
+ * rest on is a span this run proved. A conversation introduces a second thing
+ * on the table — the previous answer — which is on-topic, already written, and
+ * carried badges of its own. It is also, from this run's point of view, prose a
+ * model wrote about pages that may since have changed.
+ *
+ * The failure to prevent is not "the follow-up is wrong". It is "the follow-up
+ * is unsupported and reads as confirmed, because the conversation around it
+ * was". These tests go after that directly: a figure proven LAST turn and gone
+ * from the page THIS turn must flag; a claim with no figure in it must never
+ * reach the generator at all, because no per-sentence check would catch it.
+ */
+
+/** The same page, a week later: the rate changed and "$89" is gone. */
+const URL_A_LATER: ReadDoc = {
+  url: URL_A,
+  title: 'Jiffy',
+  text:
+    'Jiffy operates in Toronto and Ottawa with a network of cleaners. Their standard rate is now ' +
+    '$109 per visit for two hours of work, booked entirely through the app, and the company has ' +
+    'been running across Ontario for several years with steady expansion into nearby regions.',
+};
+const SPAN_LATER = 'Their standard rate is now $109 per visit';
+
+/** The previous turn, as the route would hand it back: prose with markers, and
+ *  the URLs that turn read. Its "$89" was true and proven — a week ago. */
+const PRIOR: ConversationTurn = {
+  question: 'What does Jiffy charge for a clean in Toronto?',
+  answer: 'Their standard rate is $89 per visit [1]. Jiffy is the larger of the two providers [1].',
+  sourceUrls: [URL_A],
+};
+
+interface Convo {
+  readonly searches: string[];
+  readonly fetched: string[];
+  readonly genPrompt: () => string;
+}
+
+/** A run with history, over a read port the caller controls — which is how a
+ *  page that has changed, or gone, is simulated without a network. */
+function conversational(
+  question: string,
+  text: string,
+  opts: {
+    history?: readonly ConversationTurn[];
+    askPort?: AskPort;
+    docs?: readonly ReadDoc[];
+    dead?: boolean;
+  } = {},
+): Promise<{ answer: StreamedAnswer; cap: Captured; convo: Convo }> {
+  const searches: string[] = [];
+  const fetched: string[] = [];
+  let genPrompt = '';
+  const docs = opts.docs ?? DOCS;
+
+  const cap = capture();
+  return streamAnswer(question, {
+    ask: opts.askPort ?? ask(),
+    askStream: {
+      askStream: async (system, user, _m, onDelta): Promise<AskResult | null> => {
+        genPrompt = `${system}\n${user}`;
+        onDelta(text);
+        return { text, costCents: 0.05 };
+      },
+    },
+    search: [
+      {
+        name: 'fake',
+        search: async (q: string): Promise<SearchHit[]> => {
+          searches.push(q);
+          return DOCS.map((d) => ({ title: d.title, url: d.url, snippet: '', provider: 'fake' }));
+        },
+      },
+    ],
+    read: {
+      read: async (url: string): Promise<ReadDoc | null> => {
+        fetched.push(url);
+        return opts.dead === true ? null : (docs.find((d) => d.url === url) ?? null);
+      },
+    },
+    ...(opts.history ? { history: opts.history } : {}),
+    ...cap.deps,
+  }).then((answer) => ({ answer, cap, convo: { searches, fetched, genPrompt: (): string => genPrompt } }));
+}
+
+describe('streamAnswer — a follow-up plans against the conversation', () => {
+  it('runs a first question exactly as before when no history is given', async () => {
+    const { convo } = await conversational('What does Jiffy charge?', `${SPAN_1} [1].`);
+    expect(convo.searches).toEqual(['jiffy toronto pricing']);
+    expect(convo.fetched).toEqual([URL_A, URL_B]);
+  });
+
+  it('answers the standalone rewrite, not the literal follow-up', async () => {
+    // "and in Vancouver?" attributed and generated literally selects nothing:
+    // four words that are relevant to no sentence on any page.
+    const { answer, convo } = await conversational('and in Vancouver?', `${SPAN_1} [1].`, {
+      history: [PRIOR],
+      askPort: ask({ standalone: 'What do cleaners charge in Vancouver?', queries: ['vancouver'] }),
+    });
+    expect(convo.genPrompt()).toContain('QUESTION: What do cleaners charge in Vancouver?');
+    // The reader's own words are still shown, so the answer is visibly a reply
+    // to what was typed rather than to a rewrite nobody saw.
+    expect(convo.genPrompt()).toContain('and in Vancouver?');
+    // What the reader asked is what comes back on the answer, unrewritten.
+    expect(answer.question).toBe('and in Vancouver?');
+  });
+});
+
+describe('streamAnswer — reuse skips the search, never the evidence', () => {
+  it('runs no search at all when the follow-up needs nothing new', async () => {
+    // "Which of those was cheapest?" — answerable from the pages just read. A
+    // search here spends a call and eight fetches to arrive back at them.
+    const { answer, convo } = await conversational('which of those was cheapest?', `${SPAN_1} [1].`, {
+      history: [PRIOR],
+      askPort: ask({ queries: [], reuse: true, standalone: 'Which provider was cheapest?' }),
+    });
+    expect(convo.searches).toEqual([]);
+    expect(convo.fetched).toEqual([URL_A]);
+    expect(answer.reused).toEqual([URL_A]);
+    expect(answer.queries).toEqual([]);
+    expect(answer.note).toBe('');
+  });
+
+  it('re-reads the reused page rather than trusting a remembered copy', async () => {
+    // The whole staleness argument in one assertion: reuse carries the URL
+    // list, and the fetch happens again, so the answer is about the page as it
+    // is now. `ConversationTurn` carries no text for exactly this reason.
+    const { convo } = await conversational('and now?', `${SPAN_LATER} [1].`, {
+      history: [PRIOR],
+      askPort: ask({ queries: [], reuse: true, spans: [{ span: SPAN_LATER, doc: 1 }] }),
+      docs: [URL_A_LATER],
+    });
+    expect(convo.fetched).toEqual([URL_A]);
+  });
+
+  it('fetches only what is genuinely new when it also searches', async () => {
+    // Reuse plus queries: the reused page is read once, and the search result
+    // for that same page collapses into it instead of being fetched again.
+    const { answer, convo } = await conversational('and in Ottawa?', `${SPAN_1} [1].`, {
+      history: [PRIOR],
+      askPort: ask({ queries: ['ottawa cleaners'], reuse: true }),
+    });
+    expect(convo.searches).toEqual(['ottawa cleaners']);
+    expect(convo.fetched).toEqual([URL_A, URL_B]);
+    expect(answer.reused).toEqual([URL_A]);
+  });
+
+  it('searches anyway when reuse is claimed but there is nothing to reuse', async () => {
+    const { convo } = await conversational('and in Ottawa?', `${SPAN_1} [1].`, {
+      history: [{ question: 'q', answer: 'a', sourceUrls: [] }],
+      askPort: ask({ queries: ['ottawa cleaners'], reuse: true }),
+    });
+    expect(convo.searches).toEqual(['ottawa cleaners']);
+  });
+});
+
+describe('streamAnswer — credibility does not travel between turns', () => {
+  it('flags a figure the previous turn proved once the page no longer carries it', async () => {
+    // THE CASE. "$89" was genuinely confirmed last turn against this very page.
+    // The page now says $109. The model, writing a follow-up, restates $89 and
+    // cites the span it has. Nothing about the conversation may rescue that:
+    // the figure is not in a span cited in THIS run, so the sentence flags.
+    const { answer, cap } = await conversational(
+      'and is that still the rate?',
+      `Their standard rate is $89 per visit [1].`,
+      {
+        history: [PRIOR],
+        askPort: ask({ queries: [], reuse: true, spans: [{ span: SPAN_LATER, doc: 1 }] }),
+        docs: [URL_A_LATER],
+      },
+    );
+    expect(cap.sentences[0]?.verdict).toBe('flagged');
+    expect(cap.sentences[0]?.why).toContain('"89"');
+    expect(answer.flagged).toBe(1);
+    // And the wording still says unconfirmed rather than false — the rate may
+    // have been right and merely unquoted, and we do not know which.
+    expect(cap.sentences[0]?.why).toContain('unconfirmed');
+
+    // The control, so the assertion above cannot be passing for some unrelated
+    // reason: the identical sentence over the page that DOES still say $89
+    // confirms. What changed is the evidence, not the conversation.
+    const unchanged = await conversational(
+      'and is that still the rate?',
+      `Their standard rate is $89 per visit [1].`,
+      {
+        history: [PRIOR],
+        askPort: ask({
+          queries: [],
+          reuse: true,
+          spans: [{ span: 'Their standard rate is $89 per visit for two hours of work', doc: 1 }],
+        }),
+        docs: [DOCS[0] as ReadDoc],
+      },
+    );
+    expect(unchanged.cap.sentences[0]?.verdict).toBe('confirmed');
+  });
+
+  it('never puts the previous answer where the generator could copy from it', async () => {
+    // The structural half, and the reason the check above is a backstop rather
+    // than the defence. "Jiffy is the larger of the two providers" carries no
+    // figure, so `checkSentence` would confirm it as readily as any other
+    // marked sentence — a claim from a previous run, wearing this run's badge.
+    // The only thing that stops it is that phase B is never shown the prose.
+    const { convo } = await conversational('and is that still true?', `${SPAN_LATER} [1].`, {
+      history: [PRIOR],
+      askPort: ask({ queries: [], reuse: true, spans: [{ span: SPAN_LATER, doc: 1 }] }),
+      docs: [URL_A_LATER],
+    });
+    const prompt = convo.genPrompt();
+    expect(prompt).not.toContain('larger of the two');
+    expect(prompt).not.toContain('$89');
+    expect(prompt).not.toContain(PRIOR.answer);
+    // What it IS given: the standalone question and the spans proven this run.
+    expect(prompt).toContain(SPAN_LATER);
+  });
+
+  it('refuses rather than answering from history when the reused pages are gone', async () => {
+    // Link rot, or a changed robots.txt. The previous answer is right there and
+    // would make a serviceable reply. Using it would mean an answer not one
+    // word of which was proven this run.
+    const { answer, cap } = await conversational('and is that still the rate?', 'unused', {
+      history: [PRIOR],
+      askPort: ask({ queries: [], reuse: true }),
+      dead: true,
+    });
+    expect(answer.text).toBe('');
+    expect(cap.deltas).toEqual([]);
+    expect(answer.sentences).toEqual([]);
+    expect(answer.note).toContain('context, not evidence');
+  });
+
+  it('still deletes a fabricated marker inside a follow-up', async () => {
+    const { answer, cap } = await conversational(
+      'and elsewhere?',
+      `${SPAN_LATER} [1]. Jiffy also covers Hamilton [9].`,
+      {
+        history: [PRIOR],
+        askPort: ask({ queries: [], reuse: true, spans: [{ span: SPAN_LATER, doc: 1 }] }),
+        docs: [URL_A_LATER],
+      },
+    );
+    expect(answer.text).not.toContain('[9]');
+    expect(cap.sentences[1]?.verdict).toBe('flagged');
+  });
+
+  it('still runs the honesty gate and the causal lint on a follow-up', async () => {
+    const { cap } = await conversational(
+      'and are they safe?',
+      'Every Jiffy cleaner is fully vetted [1]. The $109 rate caused bookings to fall [1].',
+      {
+        history: [PRIOR],
+        askPort: ask({ queries: [], reuse: true, spans: [{ span: SPAN_LATER, doc: 1 }] }),
+        docs: [URL_A_LATER],
+      },
+    );
+    expect(cap.sentences[0]?.why).toContain('honesty gate');
+    expect(cap.sentences[1]?.why).toContain('causal language');
+  });
+});
+
+describe('streamAnswer — related questions', () => {
+  it('returns questions grounded in the spans this run proved', async () => {
+    const { answer } = await run(`${SPAN_1} [1]. ${SPAN_2} [2].`, undefined, ask({
+      related: [
+        'Does Jiffy operate outside Ottawa?',
+        'How large is the Calgary snow-removal market?',
+        'Is the 15% TaskRabbit fee typical in Canada?',
+      ],
+    }));
+    // The middle one names nothing any quote mentions and does not survive.
+    expect(answer.related).toEqual([
+      'Does Jiffy operate outside Ottawa?',
+      'Is the 15% TaskRabbit fee typical in Canada?',
+    ]);
+  });
+
+  it('offers nothing when there was nothing to answer from', async () => {
+    const { answer } = await run('anything', undefined, ask({ spans: [], related: ['Anything?'] }));
+    expect(answer.related).toEqual([]);
   });
 });

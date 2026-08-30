@@ -593,6 +593,191 @@ export async function appendMessage(m: NewMessage, ex: Executor = db()): Promise
   return withTx((tx) => appendInTransaction(m, tx));
 }
 
+/* ── forking ────────────────────────────────────────────────────────────── */
+
+/**
+ * The fork's own identity. Minted by the caller, like every other id here, and
+ * stamped with the caller's instant — the adapter still never reads the clock.
+ */
+export interface NewFork {
+  readonly id: string;
+  readonly createdAt: string;
+}
+
+/** What the sidebar can render on one line, and what 015's title check will
+ *  accept. Shared by both title paths below. */
+const MAX_TITLE_CHARS = 80;
+const FORK_SUFFIX = ' (fork)';
+
+const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim();
+
+const cap = (s: string, max: number): string =>
+  s.length <= max ? s : `${s.slice(0, max - 1).trimEnd()}…`;
+
+/**
+ * WHAT A FORK IS CALLED.
+ *
+ * Not the parent's title. §7 of the answer-engine plan names generic
+ * auto-titles as one of three Perplexity mistakes not to repeat, and a sidebar
+ * holding three rows all called "Jiffy snow removal pricing" is that complaint
+ * with an extra step — the whole reason to fork is to tell the branches apart.
+ *
+ * The honest name for a branch is THE QUESTION IT WAS CUT AT: that is what the
+ * new conversation is about, and it is already written down. The parent's title
+ * is only the fallback, for the case where the prefix contains no question at
+ * all — and it arrives as `generated` rather than `question`, so that a parent
+ * title which was a human RENAME (`title_source = 'user'`) does not smuggle its
+ * un-overwritable status into a title no human ever typed.
+ */
+function forkTitle(
+  branchQuestion: string | null,
+  parentTitle: string,
+): { readonly title: string; readonly source: TitleSource } {
+  const question = collapse(branchQuestion ?? '');
+  const source: TitleSource = question !== '' ? 'question' : 'generated';
+  const base = question !== '' ? question : collapse(parentTitle);
+  if (base === '') return { title: 'Untitled fork', source };
+  // Forking a fork must not read "… (fork) (fork)".
+  if (base.endsWith(FORK_SUFFIX)) return { title: cap(base, MAX_TITLE_CHARS), source };
+  return { title: `${cap(base, MAX_TITLE_CHARS - FORK_SUFFIX.length)}${FORK_SUFFIX}`, source };
+}
+
+async function forkInTransaction(
+  threadId: string,
+  uptoSeq: number,
+  fork: NewFork,
+  ex: Executor,
+): Promise<ThreadRecord> {
+  // The same row lock `appendMessage` takes, for a second reason on top of the
+  // existence check: it is what stops an append landing between the cut being
+  // read and the prefix being copied, which would fork a thread that is not the
+  // one the reader was looking at.
+  const parent = await guard('forkThread', () =>
+    ex.maybeOne(sql`select t.title from thread t where t.id = ${threadId}::uuid for update`),
+  );
+  if (parent === null) throw new NotFoundError(`unknown thread: ${threadId}`);
+
+  // Both facts about the cut in one round trip: the message being forked FROM,
+  // and the last question asked at or before it, which is what names the fork.
+  const cut = await guard('forkThread', () =>
+    ex.one(sql`
+      select (select m.id::text from message m
+               where m.thread_id = ${threadId}::uuid and m.seq = ${uptoSeq}) as branch_id,
+             (select m.body from message m
+               where m.thread_id = ${threadId}::uuid and m.seq <= ${uptoSeq} and m.role = 'user'
+               order by m.seq desc limit 1) as branch_question`),
+  );
+
+  const branchId = asTextOrNull(cut.branch_id, 'branch_id');
+  if (branchId === null) {
+    // NOT "copy as much as exists". A seq naming no message is a mistake, and
+    // answering it with the whole thread hides the mistake behind a plausible
+    // result — the caller believes they cut at a point that was never there.
+    throw new NotFoundError(
+      `forkThread: thread ${threadId} has no message at seq ${uptoSeq} — a fork is cut at a ` +
+        'message, and there is nothing at that position to cut at.',
+    );
+  }
+
+  const named = forkTitle(
+    asTextOrNull(cut.branch_question, 'branch_question'),
+    asText(parent.title, 'title'),
+  );
+
+  const head = await guard('forkThread', () =>
+    ex.maybeOne(sql`
+      insert into thread as t (id, title, title_source, forked_from_message_id, created_at, updated_at)
+      values (
+        ${fork.id}::uuid, ${named.title}, ${named.source}, ${branchId}::uuid,
+        ${fork.createdAt}::timestamptz, ${fork.createdAt}::timestamptz
+      )
+      on conflict (id) do nothing
+      returning ${THREAD_COLUMNS}`),
+  );
+  if (head === null) throw new ConstraintError(`forkThread: duplicate thread id: ${fork.id}`);
+
+  /**
+   * The prefix and its citations, in ONE statement.
+   *
+   * `src` is materialised — it is referenced twice AND contains a volatile
+   * function — so `new_id` is one uuid per source message, shared by the
+   * message insert and the citation insert. That is the whole trick: the
+   * old→new id map exists for the length of the statement without the adapter
+   * minting ids in a loop, and without a second round trip in which a crash
+   * could leave messages whose `[3]` points at nothing.
+   *
+   * `row_number()` rather than `m.seq`, so the fork's positions start at 1 and
+   * stay contiguous whatever the parent's numbering looked like.
+   *
+   * `created_at` IS carried over: it is when the turn happened, and 015's
+   * trigger takes `greatest(updated_at, new.created_at)`, so copying old
+   * instants cannot rewind the fork below the parent in the sidebar.
+   *
+   * `run_id` and `cost_cents` are NOT carried over. The spend happened once.
+   * A copied run id makes one paid run answer for two messages, and a copied
+   * cost bills the fork for money nobody spent — the same reason `deleteThread`
+   * leaves `ai_usage_log` alone.
+   */
+  await guard('forkThread', () =>
+    ex.execute(sql`
+      with src as (
+        select m.id,
+               row_number() over (order by m.seq) as seq,
+               m.role, m.body, m.mode, m.answer, m.created_at,
+               gen_random_uuid() as new_id
+          from message m
+         where m.thread_id = ${threadId}::uuid and m.seq <= ${uptoSeq}
+      ),
+      copied as (
+        insert into message (id, thread_id, seq, role, body, mode, run_id, cost_cents, answer, created_at)
+        select s.new_id, ${fork.id}::uuid, s.seq::int, s.role, s.body, s.mode,
+               null::text, 0::numeric, s.answer, s.created_at
+          from src s
+      )
+      insert into message_citation (message_id, ordinal, source_url, span, title)
+      select s.new_id, c.ordinal, c.source_url, c.span, c.title
+        from src s
+        join message_citation c on c.message_id = s.id`),
+  );
+
+  return rowToThread(head);
+}
+
+/**
+ * FORK A THREAD AT A MESSAGE — the plan's §7, item 2.
+ *
+ * Perplexity's top UX complaint is a long thread that drifts with no way to cut
+ * it, and 015 reserved `forked_from_message_id` for this and then deliberately
+ * left it unwritten. This writes it.
+ *
+ * The fork is a NEW thread carrying the conversation up to and including
+ * `uptoSeq` — every message, with its citations — and a pointer back to the
+ * message it was cut from. The parent is untouched: forking is not moving.
+ *
+ * ATOMIC, ALWAYS. A half-copied thread is worse than no fork: a message stored
+ * without its citations is an answer whose `[3]` points at nothing, and a
+ * thread head with no messages under it is a conversation that never happened.
+ * So the whole copy is one transaction, joined to the caller's if there is one.
+ */
+export async function forkThread(
+  threadId: string,
+  uptoSeq: number,
+  fork: NewFork,
+  ex: Executor = db(),
+): Promise<ThreadRecord> {
+  requireUuid('forkThread', 'threadId', threadId);
+  requireUuid('forkThread', 'fork id', fork.id);
+  if (!Number.isInteger(uptoSeq) || uptoSeq < 1) {
+    throw new ConstraintError(
+      `forkThread: seq must be a positive integer, got ${uptoSeq} — positions are 1-based ` +
+        'and assigned by appendMessage.',
+    );
+  }
+
+  if (inTransaction()) return forkInTransaction(threadId, uptoSeq, fork, ex);
+  return withTx((tx) => forkInTransaction(threadId, uptoSeq, fork, tx));
+}
+
 /* ── small guards ───────────────────────────────────────────────────────── */
 
 function requireUuid(op: string, what: string, value: string): void {

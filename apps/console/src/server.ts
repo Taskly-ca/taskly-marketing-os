@@ -22,6 +22,7 @@
  * for whoever wants it back; nothing here starts a timer.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +35,7 @@ import {
   createPostgresPredictionStore,
   createResolverContext,
   deleteThread,
+  forkThread,
   getThread,
   listThreads,
   renameThread,
@@ -179,7 +181,7 @@ async function forecast(res: ServerResponse, body: Record<string, unknown>): Pro
  * store refuses a non-uuid anyway, but a route that hands the database
  * arbitrary path segments is the shape to avoid whether or not it is safe today.
  */
-const THREAD_PATH = /^\/api\/threads\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/(rename|archive))?$/i;
+const THREAD_PATH = /^\/api\/threads\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/(rename|archive|fork))?$/i;
 
 async function threadRoute(
   req: IncomingMessage,
@@ -207,6 +209,34 @@ async function threadRoute(
       // later auto-titler from overwriting it.
       await renameThread(id, title);
       return json(res, 200, { id, title });
+    }
+    if (action === 'fork' && method === 'POST') {
+      /**
+       * FORK FROM HERE — the plan's §7, item 2.
+       *
+       * Perplexity's top UX complaint is a thread that drifts with no way to
+       * cut it, and 015 reserved the column for this. `{"seq": 3}` is the
+       * message to branch AT: the fork carries the conversation up to and
+       * including it, with its citations, and the parent is untouched.
+       *
+       * The position is validated here so that a typo is a 400 naming the
+       * value, rather than reaching the store and coming back as a constraint
+       * message about 1-based positions. `seq`, not a message id, because that
+       * is the definition 015 gave a fork (`seq <= n`) and the only one a
+       * timestamp cannot give it.
+       */
+      const raw = (await readBody(req))['seq'];
+      const seq = Number(raw);
+      if (!Number.isInteger(seq) || seq < 1) {
+        return text(res, 400, `"${String(raw)}" is not a position — fork at a message seq like 3`);
+      }
+      // The id and the instant are minted here: adapters in this repo never
+      // read the clock and never invent an id.
+      const forked = await forkThread(id, seq, {
+        id: randomUUID(),
+        createdAt: new Date().toISOString(),
+      });
+      return json(res, 201, forked);
     }
     if (action === 'archive' && method === 'POST') {
       // Soft delete, and undoable: `{"archived": false}` puts it back. That

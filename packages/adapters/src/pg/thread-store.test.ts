@@ -36,6 +36,7 @@ import {
   archiveThread,
   createThread,
   deleteThread,
+  forkThread,
   getThread,
   listThreads,
   renameThread,
@@ -464,5 +465,159 @@ describe('decoding what came back', () => {
     expect(t.archivedAt).toBeNull();
     expect(t.updatedAt).toBe(T0);
     expect(() => rowToThread(cannedThread({ title_source: 'auto' }))).toThrow(DecodeError);
+  });
+});
+
+/**
+ * FORKING — §7 of the plan: Perplexity's top UX complaint is a thread that
+ * drifts with no way to cut it, and 015 reserved `forked_from_message_id` for
+ * exactly this. Five things are worth pinning down with no connection:
+ *
+ *  1. It is ONE transaction. A half-copied thread — messages without their
+ *     citations, or a thread head with no messages under it — is worse than no
+ *     fork, because it looks like a conversation and is not one.
+ *  2. It refuses a seq that names no message, rather than quietly degrading to
+ *     "copy the whole thread". `seq <= 99` on a four-message thread is a
+ *     mistake, and answering it with the whole thread hides the mistake.
+ *  3. The copy carries CONTENT, not BILLING. `run_id` and `cost_cents` are
+ *     dropped: the spend happened once, and a fork that inherits it
+ *     double-counts every roll-up that sums per-message cost.
+ *  4. The title is not the parent's. §7's third item is generic auto-titles;
+ *     two rows called "Jiffy snow removal pricing" in the sidebar is that
+ *     complaint with an extra step.
+ *  5. The new ids come from `gen_random_uuid()` inside the statement, so the
+ *     adapter still never mints an id per row in a loop.
+ */
+describe('forkThread', () => {
+  const FORK = '44444444-4444-4444-8444-444444444444';
+  const T1 = '2026-08-31T09:00:00.000Z';
+  const fork = { id: FORK, createdAt: T1 };
+
+  /** Lock · branch point · insert head · copy. */
+  const script = (over: Partial<QueryRow> = {}): readonly (readonly QueryRow[])[] => [
+    [{ title: 'Jiffy snow removal pricing' }],
+    [{ branch_id: MSG, branch_question: 'What does Jiffy charge for snow removal?', ...over }],
+    [cannedThread({ id: FORK, forked_from_message_id: MSG, created_at: new Date(T1), updated_at: new Date(T1) })],
+    [{}],
+  ];
+
+  it('locks the parent first, then reads the cut, then writes the head, then copies', async () => {
+    const ex = recordingExecutor(script());
+    await inFakeTx(() => forkThread(THREAD, 2, fork, ex));
+
+    expect(ex.queries).toHaveLength(4);
+    // The lock is also the existence check, exactly as in appendMessage — and
+    // it is what stops a concurrent append from landing between the cut being
+    // read and the prefix being copied.
+    expect(ex.queries[0]?.text).toContain('from thread t where t.id = $1::uuid for update');
+    expect(ex.queries[1]?.text).toContain('as branch_id');
+    expect(ex.queries[2]?.text).toContain('insert into thread');
+    expect(ex.queries[3]?.text).toContain('insert into message_citation');
+  });
+
+  it('records where it was cut — a fork that forgets that is just a new thread', async () => {
+    const ex = recordingExecutor(script());
+    const out = await inFakeTx(() => forkThread(THREAD, 2, fork, ex));
+
+    expect(ex.queries[2]?.values).toContain(MSG);
+    expect(out.forkedFromMessageId).toBe(MSG);
+    expect(out.id).toBe(FORK);
+  });
+
+  it('names the fork after the question it was cut at, not after the parent', async () => {
+    const ex = recordingExecutor(script());
+    await inFakeTx(() => forkThread(THREAD, 2, fork, ex));
+
+    const title = ex.queries[2]?.values[1];
+    expect(title).toBe('What does Jiffy charge for snow removal? (fork)');
+    expect(title).not.toBe('Jiffy snow removal pricing');
+    // Derived, therefore replaceable: only a human rename may stamp 'user'.
+    expect(ex.queries[2]?.values).toContain('question');
+  });
+
+  it('falls back to the parent title when the cut carries no question, and does not stutter', async () => {
+    const ex = recordingExecutor(script({ branch_question: null }));
+    await inFakeTx(() => forkThread(THREAD, 2, fork, ex));
+    expect(ex.queries[2]?.values[1]).toBe('Jiffy snow removal pricing (fork)');
+    expect(ex.queries[2]?.values).toContain('generated');
+
+    // Forking a fork must not produce "… (fork) (fork)".
+    const again = recordingExecutor([
+      [{ title: 'Jiffy snow removal pricing (fork)' }],
+      ...script({ branch_question: null }).slice(1),
+    ]);
+    await inFakeTx(() => forkThread(THREAD, 2, fork, again));
+    expect(again.queries[2]?.values[1]).toBe('Jiffy snow removal pricing (fork)');
+  });
+
+  it('caps the title at what the sidebar can render', async () => {
+    const ex = recordingExecutor(script({ branch_question: 'x'.repeat(300) }));
+    await inFakeTx(() => forkThread(THREAD, 2, fork, ex));
+    expect(String(ex.queries[2]?.values[1]).length).toBeLessThanOrEqual(80);
+  });
+
+  it('copies the prefix and its citations in one statement, renumbered from 1', async () => {
+    const ex = recordingExecutor(script());
+    await inFakeTx(() => forkThread(THREAD, 3, fork, ex));
+
+    const copy = ex.queries[3];
+    expect(copy?.text).toContain('row_number() over (order by m.seq)');
+    expect(copy?.text).toContain('m.seq <= $2');
+    expect(copy?.text).toContain('gen_random_uuid()');
+    expect(copy?.text).toContain('insert into message ');
+    expect(copy?.text).toContain('join message_citation c on c.message_id = s.id');
+    expect(copy?.values).toEqual([THREAD, 3, FORK]);
+  });
+
+  it('drops the run id and the cost — the spend happened once', async () => {
+    const ex = recordingExecutor(script());
+    await inFakeTx(() => forkThread(THREAD, 2, fork, ex));
+    // Copied, a run id would make one paid run answer for two messages and a
+    // cost roll-up would bill the fork for money nobody spent.
+    expect(ex.queries[3]?.text).toContain('null::text');
+    expect(ex.queries[3]?.text).toContain('0::numeric');
+    expect(ex.queries[3]?.text).not.toContain('s.run_id');
+  });
+
+  it('refuses a seq that names no message instead of copying the whole thread', async () => {
+    const ex = recordingExecutor([
+      [{ title: 'Jiffy snow removal pricing' }],
+      [{ branch_id: null, branch_question: null }],
+    ]);
+    await expect(inFakeTx(() => forkThread(THREAD, 99, fork, ex))).rejects.toThrow(NotFoundError);
+    // Nothing was written: two reads ran and the transaction stops there.
+    expect(ex.queries).toHaveLength(2);
+  });
+
+  it('reports a missing parent as NotFound before it writes anything', async () => {
+    const ex = recordingExecutor([[]]);
+    await expect(inFakeTx(() => forkThread(THREAD, 1, fork, ex))).rejects.toThrow(NotFoundError);
+    expect(ex.queries).toHaveLength(1);
+  });
+
+  it('turns a duplicate fork id into an error rather than an aborted transaction', async () => {
+    const ex = recordingExecutor([
+      [{ title: 'Jiffy snow removal pricing' }],
+      [{ branch_id: MSG, branch_question: 'why?' }],
+      [], // `on conflict do nothing` returned no row
+    ]);
+    await expect(inFakeTx(() => forkThread(THREAD, 1, fork, ex))).rejects.toThrow(/duplicate/);
+    expect(ex.queries).toHaveLength(3);
+  });
+
+  it('checks its arguments before opening a transaction at all', async () => {
+    const ex = recordingExecutor();
+    await expect(forkThread('nope', 1, fork, ex)).rejects.toThrow(ConstraintError);
+    await expect(forkThread(THREAD, 1, { ...fork, id: 'nope' }, ex)).rejects.toThrow(ConstraintError);
+    for (const seq of [0, -1, 1.5, Number.NaN]) {
+      await expect(forkThread(THREAD, seq, fork, ex)).rejects.toThrow(/seq/);
+    }
+    expect(ex.queries).toHaveLength(0);
+  });
+
+  it('parameterises every value — no id is concatenated into the text', async () => {
+    const ex = recordingExecutor(script());
+    await inFakeTx(() => forkThread(THREAD, 2, fork, ex));
+    for (const q of ex.queries) noValuesInText(q.text, q.values);
   });
 });

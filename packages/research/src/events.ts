@@ -97,3 +97,33 @@ export const ANSWER_EVENTS = [
 ] as const;
 
 export type AnswerEventName = (typeof ANSWER_EVENTS)[number];
+
+/* ── conversation ─────────────────────────────────────────────────────────── */
+
+/**
+ * ONE PRIOR TURN, as a follow-up needs to see it.
+ *
+ * Defined here with the wire contract rather than inside the pipeline because
+ * three pieces built in parallel have to agree on it: the planner that resolves
+ * "and in Vancouver?" against it, the route that loads it out of Postgres, and
+ * the browser that shows the thread it came from.
+ *
+ * WHY THE ANSWER IS CARRIED AS RENDERED TEXT, MARKERS INCLUDED. The temptation
+ * is to strip `[1]` before feeding history back to a model — it is noise to a
+ * planner. But a follow-up like "where did that price come from?" is ABOUT the
+ * marker, and a history that has quietly deleted it cannot answer. The planner
+ * is told what the markers mean instead.
+ *
+ * WHY SOURCES RIDE ALONG. A follow-up on the same subject should not re-search
+ * the web from nothing: the pages that answered the last question usually
+ * answer this one, and re-fetching them costs a search call, eight fetches and
+ * a 2s-per-host floor to arrive back at the same documents. Carrying them lets
+ * the planner decide whether new retrieval is needed at all.
+ */
+export interface ConversationTurn {
+  readonly question: string;
+  /** The assistant's answer as it was rendered, `[N]` markers intact. */
+  readonly answer: string;
+  /** URLs read for that turn, so a follow-up can reuse rather than re-fetch. */
+  readonly sourceUrls: readonly string[];
+}

@@ -26,6 +26,43 @@
  * pre-flight — is therefore provable with fakes. `runAnswer` below is the
  * remaining glue: headers, credentials, a `res.end()`. It is deliberately thin
  * because it is the part no test can reach.
+ *
+ * ── ONE EVENT THIS ROUTE ADDS TO THE CONTRACT: `epilogue` ──────────────────
+ *
+ *   event: epilogue
+ *   data:  { unanswered: string[], note: string, related: string[] }
+ *
+ * Emitted AT MOST ONCE, immediately before `done`, and only when at least one
+ * of the three fields carries something. `done` is unchanged.
+ *
+ * Why it is not simply more fields on `DoneEvent`: `events.ts` is the contract
+ * three parallel pieces were written against, and widening a shape that two of
+ * them already implement is how three pieces come to hold two contracts. A new
+ * name is additive — a reader that does not know it ignores the frame, which is
+ * exactly what SSE does with an unregistered event type.
+ *
+ * What each field is, and what it is NOT:
+ *
+ *  - `unanswered` — the parts of the question the planner said the web cannot
+ *    answer. This is the **Not answerable** card in §3's anatomy. It is not a
+ *    failure of the run; it is the run being explicit about its edges, and §7
+ *    item 1 is that hiding these is the tempting thing to delete for a cleaner
+ *    screen. The UI could not populate that section before, because `done`
+ *    carried only counts.
+ *  - `note` — the pipeline's own reason for writing no prose ("no search
+ *    results", "the model was unavailable"). It co-occurs with an EMPTY answer,
+ *    so when it is present there is nothing on screen and this frame is the
+ *    reader's only explanation. It is also what got persisted as the message
+ *    body, so the two cannot disagree.
+ *  - `related` — follow-up questions the pipeline proposed. It is present only
+ *    when the pipeline actually returned some; this route never writes one. An
+ *    answer engine that invents its own related questions is generating
+ *    unsourced text under a heading that looks derived, which is the whole
+ *    class of thing `packages/research` exists to refuse.
+ *
+ * `dropped` spans are deliberately NOT here: they are attribution's refusals,
+ * they arrive per-span while the answer is still being built, and the frame
+ * they belong on is a per-span one rather than a summary at the end.
  */
 import type { ServerResponse } from 'node:http';
 import { streamAnswer } from '@tmos/research';
@@ -44,7 +81,6 @@ import {
   type AnswerPayload,
   type CitationRecord,
   type MessageRecord,
-  type MessageRole,
   type NewMessage,
   type NewThread,
   type ThreadDetail,
@@ -53,6 +89,7 @@ import {
 import type {
   AskPort,
   AskStreamPort,
+  ConversationTurn,
   DeltaEvent,
   ReadDoc,
   ReadPort,
@@ -91,17 +128,24 @@ export interface AnswerPorts {
   readonly read: ReadPort;
 }
 
-/** One prior turn, oldest first — a follow-up is answered in context or it is
- *  not a follow-up. */
-interface AnswerTurn {
-  readonly role: MessageRole;
-  readonly body: string;
-}
-
 export interface StreamAnswerDeps extends AnswerPorts {
-  /** Part 5. Passed now because reading it is the route's job either way, and
-   *  a pipeline that ignores a field costs nothing. */
-  readonly history: readonly AnswerTurn[];
+  /**
+   * The thread so far, oldest first — a follow-up is answered in context or it
+   * is not a follow-up.
+   *
+   * `ConversationTurn` comes from `events.ts` rather than being restated here,
+   * because the planner that resolves "and in Vancouver?" against it and the
+   * route that loads it out of Postgres are two pieces built in parallel, and a
+   * shape each of them defines separately is two shapes.
+   *
+   * The pipeline's own `StreamDeps` grew a matching optional `history` on
+   * 2026-08-31, built in parallel with this. Nothing here had to change when it
+   * landed, and nothing here breaks if it is reverted: the deps object this
+   * route passes is a SUPERSET of what the pipeline requires, so a pipeline
+   * that ignores the field behaves exactly as it did before it existed. That is
+   * the whole point of restating the signature locally — see the seam below.
+   */
+  readonly history: readonly ConversationTurn[];
   readonly onStatus: (e: StatusEvent) => void;
   readonly onSource: (e: SourceEvent) => void;
   readonly onSpan: (e: SpanEvent) => void;
@@ -121,6 +165,15 @@ export interface StreamAnswerResult {
   readonly unanswered?: readonly string[];
   /** Non-empty when there is no answer and the reader is owed the reason. */
   readonly note?: string;
+  /**
+   * Follow-up questions the pipeline proposed, if it proposed any.
+   *
+   * Optional, and absent today: `streamAnswer` does not return them yet. The
+   * route relays what it is given and writes none of its own — related
+   * questions the console invented would be ungrounded text sitting under a
+   * heading that reads as derived from the answer.
+   */
+  readonly related?: readonly string[];
   readonly flagged?: number;
 }
 
@@ -273,6 +326,120 @@ export function citationsFor(
   return out;
 }
 
+/**
+ * HOW MUCH OF A THREAD A FOLLOW-UP IS ANSWERED AGAINST.
+ *
+ * A thread grows without bound and a prompt does not, so something has to give.
+ * The choice made here is that IT IS ALWAYS A CONTIGUOUS SUFFIX — the newest N
+ * turns, whole — and never a sample, a summary, or the head plus the tail.
+ *
+ * The reason is what a follow-up MEANS. "And in Vancouver?" is defined entirely
+ * by the turn before it; "why is that different from what you said earlier?"
+ * is defined by two turns that must both be present and adjacent. Dropping a
+ * turn out of the MIDDLE leaves a history that still reads as a conversation
+ * and is a different conversation from the one the user is looking at — the
+ * model has no way to notice the seam, and neither does the reader. Dropping
+ * from the OLDEST end is visible in the thread view and degrades in the
+ * direction follow-ups actually point: backwards, and not very far.
+ *
+ * The numbers: at most `MAX_HISTORY_TURNS` turns, and at most
+ * `MAX_HISTORY_CHARS` of question-plus-answer text across them, whichever binds
+ * first. Roughly 3k tokens of the ~8k a planning call can afford, leaving room
+ * for the plan prompt and the new question. Both are deliberately small: a
+ * planner needs the shape of the conversation, not a transcript.
+ *
+ * TURNS ARE NEVER CUT IN HALF. If the newest turn alone exceeds the budget it
+ * is still sent whole, because a follow-up is almost always about that turn and
+ * half an answer is not a shorter answer — it is a different one, missing
+ * exactly the markers a question like "where did that price come from?" is
+ * about.
+ *
+ * A question whose run died before it was answered is dropped rather than sent
+ * with an empty answer: `appendMessage` writes the user turn before the
+ * pipeline runs (deliberately — see `runAnswerStream`), so an unanswered
+ * question in the thread is a crash, and feeding it back as a turn tells the
+ * planner it was answered with silence.
+ */
+const MAX_HISTORY_TURNS = 6;
+const MAX_HISTORY_CHARS = 12_000;
+
+/** What the last turn read, so a follow-up can reuse rather than re-fetch. The
+ *  documents first, then any cited URL not among them — a citation whose
+ *  document did not survive into the payload is still a page we read. */
+function sourceUrlsFor(m: MessageRecord): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const all = [
+    ...(m.answer?.sources ?? []).map((d) => d.url),
+    ...m.citations.map((c) => c.sourceUrl),
+  ];
+  for (const raw of all) {
+    const url = raw.trim();
+    if (url === '' || seen.has(url)) continue;
+    seen.add(url);
+    out.push(url);
+  }
+  return out;
+}
+
+export function historyFor(detail: ThreadDetail): ConversationTurn[] {
+  const turns: ConversationTurn[] = [];
+  let question: string | null = null;
+
+  for (const m of detail.messages) {
+    if (m.role === 'user') {
+      question = m.body;
+      continue;
+    }
+    // An assistant message with no question before it cannot be paired, and
+    // pairing it with an older one would attribute an answer to the wrong ask.
+    if (question === null) continue;
+    // The answer goes back AS RENDERED, `[N]` markers intact — `events.ts` says
+    // why: a follow-up like "where did that number come from?" is about the
+    // marker, and a history that quietly deleted it cannot answer.
+    turns.push({ question, answer: m.body, sourceUrls: sourceUrlsFor(m) });
+    question = null;
+  }
+
+  const kept: ConversationTurn[] = [];
+  let chars = 0;
+  for (const turn of [...turns.slice(-MAX_HISTORY_TURNS)].reverse()) {
+    const size = turn.question.length + turn.answer.length;
+    // The newest turn is admitted whatever it costs; every older one has to fit.
+    if (kept.length > 0 && chars + size > MAX_HISTORY_CHARS) break;
+    kept.unshift(turn);
+    chars += size;
+  }
+  return kept;
+}
+
+/**
+ * The `epilogue` frame — see the header for the wire shape and why it is not
+ * more fields on `done`.
+ *
+ * Returns null when there is nothing to say, and the route then sends nothing:
+ * an empty epilogue is a frame the UI has to decide to ignore, and the sections
+ * it feeds (Not answerable, related questions) are absent rather than empty
+ * when a run had neither.
+ */
+export interface EpilogueEvent {
+  readonly unanswered: readonly string[];
+  readonly note: string;
+  readonly related: readonly string[];
+}
+
+const cleaned = (xs: readonly string[] | undefined): string[] =>
+  (xs ?? []).map((x) => x.trim()).filter((x) => x !== '');
+
+export function epilogueFor(result: StreamAnswerResult): EpilogueEvent | null {
+  const unanswered = cleaned(result.unanswered);
+  const note = (result.note ?? '').trim();
+  // Relayed, never authored. `related` is empty until the pipeline returns some.
+  const related = cleaned(result.related);
+  if (unanswered.length === 0 && note === '' && related.length === 0) return null;
+  return { unanswered, note, related };
+}
+
 /** The pipeline's own note when it wrote nothing, a generic line when it had
  *  none, and the prose otherwise. */
 function bodyFor(result: StreamAnswerResult): string {
@@ -411,7 +578,7 @@ export async function runAnswerStream(
   try {
     /* 1 ─ the thread */
     let threadId: string;
-    let history: readonly AnswerTurn[] = [];
+    let history: readonly ConversationTurn[] = [];
 
     if (params.threadId !== null && params.threadId !== '') {
       const existing = await deps.store.getThread(params.threadId);
@@ -424,7 +591,9 @@ export async function runAnswerStream(
         return;
       }
       threadId = existing.id;
-      history = existing.messages.map((m) => ({ role: m.role, body: m.body }));
+      // Loaded BEFORE the new question is appended, so the thread the planner
+      // sees is the conversation as it stood when the follow-up was asked.
+      history = historyFor(existing);
     } else {
       const created = await deps.store.createThread({
         id: deps.newId(),
@@ -467,6 +636,12 @@ export async function runAnswerStream(
     });
 
     deps.noteCost(result.costCents);
+
+    // Before `done`, so a UI that renders on `done` already has the refusals
+    // and the related questions in hand rather than reflowing a beat later.
+    const epilogue = epilogueFor(result);
+    if (epilogue !== null) send(sink, 'epilogue', epilogue);
+
     send(sink, 'done', {
       costCents: result.costCents,
       threadId,

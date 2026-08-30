@@ -151,7 +151,15 @@
 
   /* ── status ───────────────────────────────────────────────────────────── */
   .status{margin:0 0 18px}
-  .live{display:flex;align-items:center;gap:9px;color:var(--muted);font-size:13px}
+  .live{display:flex;align-items:center;gap:9px;color:var(--muted);font-size:13px;min-width:0}
+  /* The real pipeline's `detail` is not a label — it is four search queries
+     joined, or "33 result(s)". Rendering it AS the phase (which is what the
+     first cut did) left the line reading "33 result(s)" with no verb in front
+     of it. So the phase keeps its own words and the detail rides beside it,
+     clipped, with the whole string on hover and in the steps list. */
+  .live .detail{font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;
+                color:var(--faint);white-space:nowrap;overflow:hidden;
+                text-overflow:ellipsis;min-width:0;flex:1}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--brass);flex:none;
        animation:pulse 1.15s ease-in-out infinite}
   @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.28;transform:scale(.8)}}
@@ -193,7 +201,7 @@
   .sent.flagged{text-decoration:underline dotted var(--moved);text-underline-offset:4px;
                 text-decoration-thickness:1px}
   .cb{font-family:var(--mono);font-size:9.5px;line-height:1;vertical-align:super;
-      display:inline-block;min-width:12px;text-align:center;padding:2px 2px;margin:0 0 0 1px;
+      display:inline-block;min-width:10px;text-align:center;padding:2px 1px;margin:0 1px 0 0;
       border-radius:5px;cursor:pointer;border:1px solid transparent;
       transition:background .18s ease,color .18s ease,border-color .18s ease;
       user-select:none}
@@ -245,18 +253,28 @@
   .drop em{display:block;font-style:normal;font-size:12px;color:var(--moved);margin-top:3px}
   .drop .qt{display:block;font-size:12.5px;color:var(--ink);margin-bottom:3px}
   .none{color:var(--faint);font-size:12.5px;padding:4px 0}
+  .rgroup .note{color:var(--ink);font-size:13px;line-height:1.55;padding:4px 0}
 
   /* ── related + actions ────────────────────────────────────────────────── */
   .related{margin-top:24px}
   .related .eyebrow{display:block;margin-bottom:9px}
-  .rq{display:block;width:100%;text-align:left;border:0;border-top:1px solid var(--line);
-      border-radius:0;padding:11px 4px;font-size:14px;color:var(--ink);background:none;
-      white-space:normal;line-height:1.4}
-  .rq:hover{background:var(--wash);border-color:var(--line)}
-  .rq .plus{color:var(--brass);font-family:var(--mono);margin-right:9px}
+  .chips{display:flex;flex-wrap:wrap;gap:7px}
+  .rq{border:1px solid var(--line);background:var(--surface);border-radius:999px;
+      padding:7px 14px;font-size:12.5px;color:var(--muted);text-align:left;
+      max-width:100%;white-space:normal;line-height:1.4}
+  .rq:hover{background:var(--wash);color:var(--ink);border-color:var(--faint)}
+  .rq .plus{color:var(--brass);font-family:var(--mono);margin-right:7px}
+  .related .foot{color:var(--faint);font-size:11.5px;margin-top:9px}
   .actions{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:22px}
   .actions .cost{margin-left:auto;font-family:var(--mono);font-size:10px;letter-spacing:.1em;
                  text-transform:uppercase;color:var(--faint)}
+  /* An answer that is empty ON PURPOSE. Not an error — the run worked, read
+     its documents and found nothing it could quote. Dashed, muted, and clearly
+     not prose, so it is never mistaken for the answer. */
+  .blank{border:1px dashed var(--line);border-radius:12px;padding:12px 15px;
+         color:var(--muted);font-size:13.5px;line-height:1.55;background:var(--surface)}
+  .blank b{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.11em;
+           text-transform:uppercase;font-weight:500;color:var(--faint);margin-bottom:5px}
   .err{border:1px solid var(--moved);border-radius:12px;padding:11px 14px;color:var(--moved);
        font-size:13px;background:var(--surface);margin-top:12px}
   .err b{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.11em;
@@ -324,7 +342,8 @@
           <textarea id="q0" rows="1" placeholder="Ask about a market, a competitor, or a call you have to make…"></textarea>
           <div class="modes" id="modes0">
             <button data-mode="fast" aria-pressed="true" title="Streams as it writes; each sentence is checked a beat behind">Fast</button>
-            <button data-mode="verified" aria-pressed="false" title="Nothing is shown until the whole answer passes the verbatim gate">Verified</button>
+            <button data-mode="verified" aria-pressed="false" disabled
+              title="Not wired yet — /api/answer takes only a question and a thread, so every run is Fast. Disabled rather than left as a toggle that silently does nothing.">Verified</button>
           </div>
           <button class="primary go" id="go0" aria-label="Ask">→</button>
         </div>
@@ -342,7 +361,8 @@
           <textarea id="q1" rows="1" placeholder="Ask a follow-up…"></textarea>
           <div class="modes" id="modes1">
             <button data-mode="fast" aria-pressed="true">Fast</button>
-            <button data-mode="verified" aria-pressed="false">Verified</button>
+            <button data-mode="verified" aria-pressed="false" disabled
+              title="Not wired yet — every run is Fast.">Verified</button>
           </div>
           <button class="primary go" id="go1" aria-label="Ask">→</button>
         </div>
@@ -444,6 +464,19 @@ function newTurn(question) {
     spans: new Map(),   // id -> SpanEvent
     sentences: new Map(), // n -> sentence record
     order: [],          // sentence indices, in creation order
+    phase: '',
+    phaseDetail: '',
+    // Which pipeline wrote it. A fast run has no claim-level drop stage at all,
+    // and saying "nothing was dropped" about a stage that does not exist is the
+    // kind of quiet over-claim the refusals card exists to prevent.
+    mode: 'fast',
+    // Fork needs (thread, seq). `done` carries a messageId, not a seq, so the
+    // seq is resolved from the thread transcript at fork time — see forkTurn.
+    threadId: null,
+    messageId: null,
+    seq: null,
+    // The pre-`done` `epilogue` frame: unanswered, the run's note, related.
+    epilogue: null,
     doneAt: null,
     els: null,
   };
@@ -556,34 +589,54 @@ function renderThreads(rows) {
   for (const r of rows) {
     const b = el('button', 'thread');
     b.setAttribute('aria-current', 'false');
+    b.dataset.threadId = String(r.id ?? '');
     b.appendChild(document.createTextNode(String(r.title || r.question || 'Untitled thread')));
-    if (r.createdAt || r.created_at) {
-      b.appendChild(el('small', null, String(r.createdAt || r.created_at).slice(0, 10)));
+    const meta = [];
+    if (r.createdAt || r.created_at) meta.push(String(r.createdAt || r.created_at).slice(0, 10));
+    if (Number(r.messageCount) > 0) {
+      const turns = Math.ceil(Number(r.messageCount) / 2);
+      meta.push(turns + (turns === 1 ? ' turn' : ' turns'));
     }
-    b.addEventListener('click', () => openThread(r, b));
+    // A fork says so in the list. Otherwise the only difference between a fork
+    // and a coincidentally similar thread is in the database.
+    if (r.forkedFromMessageId) meta.push('forked');
+    if (meta.length) b.appendChild(el('small', null, meta.join(' · ')));
+    b.addEventListener('click', () => { void openThreadById(String(r.id ?? ''), r); });
     wrap.appendChild(b);
+  }
+  markThreadCurrent(S.threadId);
+}
+
+/** The sidebar's idea of "where you are". Called after a run creates a thread,
+ *  after a fork, and on every re-list — the list is rebuilt from scratch each
+ *  time, so the highlight has to be re-applied rather than assumed. */
+function markThreadCurrent(id) {
+  for (const t of document.querySelectorAll('.thread')) {
+    t.setAttribute('aria-current', String(id != null && t.dataset.threadId === String(id)));
   }
 }
 
-async function openThread(row, btn) {
-  for (const t of document.querySelectorAll('.thread')) t.setAttribute('aria-current', 'false');
-  btn.setAttribute('aria-current', 'true');
+async function openThreadById(id, row) {
   document.body.classList.remove('side-open');
-  S.threadId = row.id ?? null;
-  if (S.demo) { resetToEmpty(); submit(String(row.title)); return; }
+  stopStream();
+  S.threadId = id || null;
+  markThreadCurrent(S.threadId);
+  if (S.demo) { const q = String((row && row.title) || ''); resetToEmpty(); submit(q); return; }
   try {
-    const res = await fetch('/api/threads/' + encodeURIComponent(String(row.id)));
+    const res = await fetch('/api/threads/' + encodeURIComponent(String(id)));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const detail = await res.json();
     if (!Array.isArray(detail && detail.messages) || detail.messages.length === 0) throw new Error('empty');
     replayThread(detail);
+    markThreadCurrent(S.threadId);
   } catch {
     // Degrade honestly rather than pretending the thread is empty.
     S.turns = [];
     $('#turns').replaceChildren();
     enterThreadView();
-    const t = newTurn(String(row.title || row.question || 'Saved thread'));
+    const t = newTurn(String((row && (row.title || row.question)) || 'Saved thread'));
     S.turns.push(t);
+    TURNS.set(t.id, t);
     $('#turns').appendChild(buildTurn(t));
     showError(t, 'This thread is saved, but the transcript endpoint is not available yet. Ask the question again to re-run it.');
     finishTurn(t, null);
@@ -613,6 +666,7 @@ function replayThread(detail) {
   const open = (question) => {
     turn = newTurn(question);
     turn.replayed = true;
+    turn.threadId = detail.id ?? S.threadId;
     S.turns.push(turn);
     TURNS.set(turn.id, turn);
     $('#turns').appendChild(buildTurn(turn));
@@ -646,15 +700,36 @@ function replayThread(detail) {
                      quote: String(c.span ?? '') });
     }
 
-    feedDelta(turn, 1, String(m.body ?? ''));
+    /* A STORED BODY IS NOT ALWAYS AN ANSWER.
+     *
+     * When a run finds nothing quotable it writes no prose, and the route
+     * persists the run's own note as the message body so the thread is not
+     * blank. Replayed as prose that reads as a confident uncited sentence —
+     * the exact shape this system refuses. A body carrying no `[N]` and no
+     * citations was never an answer, so it is replayed as the note it is. */
+    const body = String(m.body ?? '');
+    const isNote = cites.length === 0 && !/\[\d{1,3}\]/.test(body);
+    // The server numbers sentences from 0. A stored answer is one block, so it
+    // is fed as sentence 0 — matching the live stream rather than inventing a
+    // second convention for the replay path.
+    if (!isNote) feedDelta(turn, 0, body);
     markStored(turn);
+    turn.mode = String(m.mode || 'fast');
+    // Fork needs the seq, and a replayed turn has it for free — no lookup.
+    turn.seq = Number.isFinite(Number(m.seq)) ? Number(m.seq) : null;
+    turn.messageId = m.id ?? null;
     finishTurn(turn, {
       costCents: Number(m.costCents) || 0,
       threadId: detail.id ?? S.threadId,
       messageId: m.id ?? null,
       flagged: 0,
-      dropped: payload.dropped,
+      // `dropped` is passed only when it has content. A fast run stores `[]`
+      // because it HAS no drop stage, not because the stage ran and found
+      // nothing — and an empty array here would be rendered as the latter.
+      dropped: (Array.isArray(payload.dropped) && payload.dropped.length) ? payload.dropped : undefined,
       unanswered: payload.unanswered,
+      queries: payload.queries,
+      note: isNote ? body : undefined,
     });
     turn = null;
   }
@@ -687,7 +762,9 @@ function buildTurn(turn) {
   /* status */
   const status = el('div', 'status');
   const live = el('div', 'live');
-  live.append(el('span', 'dot'), el('span', 'phase', 'Planning searches…'));
+  const phase = el('span', 'phase', 'Planning searches…');
+  const detail = el('span', 'detail');
+  live.append(el('span', 'dot'), phase, detail);
   const toggle = el('button', 'steps-toggle hidden');
   toggle.setAttribute('aria-expanded', 'false');
   const steps = el('ol', 'steps hidden');
@@ -712,6 +789,9 @@ function buildTurn(turn) {
   prose.appendChild(cursor);
   root.appendChild(prose);
 
+  const blank = el('div', 'blank hidden');
+  root.appendChild(blank);
+
   const err = el('div', 'err hidden');
   root.appendChild(err);
 
@@ -725,25 +805,55 @@ function buildTurn(turn) {
   const actions = el('div', 'actions hidden');
   root.appendChild(actions);
 
-  turn.els = { root, live, phase: live.lastChild, toggle, steps, sources, sgrid,
-               scount: shead.lastChild, prose, cursor, err, refusals, related, actions };
+  turn.els = { root, live, phase, detail, toggle, steps, sources, sgrid,
+               scount: shead.lastChild, prose, cursor, blank, err, refusals, related, actions };
   return root;
 }
 
 /* ══ event handlers — one per name in ANSWER_EVENTS ════════════════════════ */
 
+/**
+ * WHAT THE LIVE RUN CHANGED HERE.
+ *
+ * The first cut rendered `detail || PHASE_LABEL[phase]` as the whole live line,
+ * on the assumption that a detail is a nicer sentence than a label. Against the
+ * real pipeline it is not: `reading` arrives with `"33 result(s)"` and
+ * `searching` with four model-written queries joined by `·`. The line read
+ * "33 result(s)" — a number with no verb in front of it — and then a 90-column
+ * query list. So the phase always speaks in words, and the detail rides beside
+ * it, clipped, with the full string on hover and in the steps list.
+ */
 function onStatus(turn, ev) {
   const phase = String(ev && ev.phase || '');
   const detail = ev && ev.detail ? String(ev.detail) : '';
   turn.steps.push({ phase, detail });
-  const line = detail || PHASE_LABEL[phase] || phase;
-  turn.els.phase.textContent = line;
+  turn.phase = phase;
+  turn.phaseDetail = detail;
+  turn.els.phase.textContent = PHASE_LABEL[phase] || phase || 'Working…';
+  paintDetail(turn);
   const li = el('li');
   // The one place markup is built from a string rather than nodes. `detail`
   // carries a search query the model wrote, so it goes through esc() — same
   // guard, same shape as ui.html.
-  li.innerHTML = '<b>' + esc(phase) + '</b>' + esc(line);
+  li.innerHTML = '<b>' + esc(phase) + '</b>' + esc(detail || PHASE_LABEL[phase] || phase);
   turn.els.steps.appendChild(li);
+}
+
+/**
+ * The second thing the live run showed: sources do not burst, they trickle.
+ * The robots-gated reader holds a 2s-per-host floor, so eight documents took
+ * 19 seconds to land — from 8s to 27s — with the status frozen on one line the
+ * whole time. A running count is the difference between "reading" and "stuck".
+ */
+function paintDetail(turn) {
+  const bits = [];
+  if (turn.phaseDetail) bits.push(turn.phaseDetail);
+  if (turn.phase === 'reading' && turn.sources.length > 0) {
+    bits.push(turn.sources.length + ' read');
+  }
+  const line = bits.join('  ·  ');
+  turn.els.detail.textContent = line;
+  turn.els.detail.title = line;
 }
 
 function onSource(turn, ev) {
@@ -765,6 +875,7 @@ function onSource(turn, ev) {
 
   turn.els.sources.classList.remove('hidden');
   turn.els.scount.textContent = String(turn.sources.length);
+  paintDetail(turn);
 
   // Staggered, capped: eight sources should not take a second to appear.
   const delay = Math.min(turn.sources.length - 1, 9) * 55;
@@ -815,12 +926,22 @@ function sentenceOf(turn, n) {
   return s;
 }
 
-/** Markers are written " [1]." and read "…October¹." — the space in front of a
- *  superscript is a rendering artefact, so it comes back out here rather than
- *  being trimmed from the model's text (which we never rewrite). */
+/**
+ * Markers are written " [1]." and read "…October¹." — the space in front of a
+ * superscript is a rendering artefact, so it comes back out here rather than
+ * being trimmed from the model's text (which we never rewrite).
+ *
+ * `endsWith(' ')` was not enough, and the live run is what showed it: Groq
+ * writes U+202F NARROW NO-BREAK SPACE before a marker (and inside money ranges
+ * — "$40\u202fto\u202f$150"). Being no-break, it does not collapse the way an
+ * ordinary space does, so every citation rendered as "$52 ¹ ." with a visible
+ * gap on both sides. The scripted demo used ASCII spaces and could never have
+ * caught it. `\s` in JS already covers the whole Unicode space-separator class,
+ * so one character of any whitespace comes off.
+ */
 function eatTrailingSpace(s) {
   const last = s.node.lastChild;
-  if (last && last.nodeType === 3 && last.data.endsWith(' ')) {
+  if (last && last.nodeType === 3 && /\s$/.test(last.data)) {
     last.deleteData(last.data.length - 1, 1);
   }
 }
@@ -913,11 +1034,69 @@ function onVerdict(turn, ev) {
 }
 
 function showError(turn, msg) {
+  turn.errored = true;
   const e = turn.els.err;
   e.replaceChildren(el('b', null, 'Stopped'), document.createTextNode(String(msg)));
   e.classList.remove('hidden');
   turn.els.live.classList.add('hidden');
   turn.els.cursor.classList.add('hidden');
+}
+
+/* ══ `epilogue` — the frame that is ABOUT the answer ════════════════════════
+
+   event: epilogue
+   data:  { unanswered: string[], note: string, related: string[] }
+
+   Emitted at most once, immediately before `done`, and — this is the part the
+   renderer has to respect — ONLY when at least one of the three carries
+   something. `done` is unchanged, so a reader that ignores this frame loses
+   nothing it used to have.
+
+   Three fields, three different jobs:
+     · `unanswered` fills the **Not answerable** card. §7 item 1: these are the
+       most tempting thing to delete for a cleaner screen. They stay.
+     · `note` co-occurs with an EMPTY answer. When it is here there is no prose
+       on screen, and this is the reader's only explanation — so it renders
+       first in the refusals card, above the lists.
+     · `related` is what the PIPELINE proposed, never what this page invented.
+       Chips beside a cited answer borrow the answer's credibility, so they say
+       in a footnote that nothing checked them.
+
+   `dropped` is deliberately not here — the route says attribution's refusals
+   arrive per-span while the answer is still being built, on a frame that does
+   not exist yet. So the Dropped group stays unreported rather than empty. */
+
+const EPILOGUE_EVENT = 'epilogue';
+
+/** Absent is NOT empty. A field this frame does not carry stays `undefined`,
+ *  and renderRefusals says "not reported" rather than "nothing". */
+function applyEpilogue(turn, raw) {
+  const d = (raw && typeof raw === 'object') ? raw : {};
+  const list = (v) => (Array.isArray(v) ? v.map(String).filter((x) => x.trim() !== '') : undefined);
+  const next = {};
+  const related = list(d.related);
+  if (related !== undefined) next.related = related;
+  const unanswered = list(d.unanswered);
+  if (unanswered !== undefined) next.unanswered = unanswered;
+  if (typeof d.note === 'string' && d.note.trim() !== '') next.note = d.note.trim();
+  if (Object.keys(next).length === 0) return;
+  turn.epilogue = Object.assign({}, turn.epilogue, next);
+  // It arrives before `done` — but a run that dies in the half-second between
+  // the two should still show what it managed to say. Cheap, and idempotent.
+  if (turn.doneAt) { renderRefusals(turn, turn.lastDone); renderRelated(turn, turn.lastDone); }
+}
+
+/** `done` plus the epilogue, without letting either invent the other's fields.
+ *  Null when neither arrived, which renderRefusals reads as "not reported". */
+function mergeEpilogue(turn, done) {
+  if (done == null && turn.epilogue == null) return null;
+  const out = Object.assign({}, done || {});
+  for (const k of ['related', 'unanswered', 'note']) {
+    if (out[k] === undefined && turn.epilogue && turn.epilogue[k] !== undefined) {
+      out[k] = turn.epilogue[k];
+    }
+  }
+  return out;
 }
 
 /* ══ done: collapse the status, surface the refusals ═══════════════════════ */
@@ -934,13 +1113,56 @@ function finishTurn(turn, done) {
     turn.els.toggle.classList.remove('hidden');
   }
 
-  renderRefusals(turn, done);
-  renderRelated(turn, done);
-  renderActions(turn, done);
+  const full = mergeEpilogue(turn, done);
+  turn.lastDone = full;
 
-  if (done && done.threadId) S.threadId = String(done.threadId);
+  if (full && full.threadId) { S.threadId = String(full.threadId); turn.threadId = S.threadId; }
+  if (full && full.messageId) turn.messageId = String(full.messageId);
+
+  renderBlank(turn, full);
+  renderRefusals(turn, full);
+  renderRelated(turn, full);
+  renderActions(turn, full);
+
   S.live = null;
   setBusy(false);
+}
+
+/**
+ * AN EMPTY ANSWER IS A RESULT, AND IT HAS TO SAY SO WHERE THE ANSWER WOULD BE.
+ *
+ * Seen on a live run, 2026-08-31: eight documents read, zero quotable spans, so
+ * the model was given an empty citable universe and correctly wrote nothing.
+ * The screen showed a source strip, an empty gap, and a refusals card — and the
+ * run's own explanation ("The documents carried nothing quotable for this
+ * question") was inside the status line, which collapses at `done`. A reader
+ * saw eight sources and silence.
+ *
+ * So the reason is lifted to where the prose would have been. `note` from the
+ * `epilogue` frame is preferred, because it is the same string that got
+ * persisted as the message body and the two cannot disagree; the run's last
+ * status detail is the fallback, and a plain line the floor.
+ */
+function renderBlank(turn, done) {
+  const box = turn.els.blank;
+  box.replaceChildren();
+  const wrote = turn.order.some((n) => {
+    const s = turn.sentences.get(n);
+    return s && stripMarkers(s.raw) !== '';
+  });
+  if (wrote || turn.errored) { box.classList.add('hidden'); return; }
+
+  const note = (done && typeof done.note === 'string' && done.note.trim() !== '')
+    ? done.note.trim()
+    : (turn.phaseDetail || '');
+  box.append(
+    el('b', null, 'No answer written'),
+    document.createTextNode(note !== ''
+      ? note
+      : 'The documents this run read carried nothing quotable for that question. ' +
+        'Nothing is being withheld — there was no sourced sentence to write.'),
+  );
+  box.classList.remove('hidden');
 }
 
 /**
@@ -959,21 +1181,54 @@ function renderRefusals(turn, done) {
   const box = turn.els.refusals;
   box.replaceChildren();
 
+  // A run that was refused at the door (budget, the concurrency guard, an
+  // unreachable server) has no refusals of its own to report — the error box
+  // above IS the whole story, and three "nothing to report" lines under it read
+  // as a gate that ran. It did not run.
+  if (turn.errored && turn.order.length === 0) { box.classList.add('hidden'); return; }
+
   const flagged = turn.order
     .map((n) => turn.sentences.get(n))
     .filter((s) => s && s.verdict === 'flagged');
   const has = (k) => done != null && done[k] !== undefined && done[k] !== null;
   const dropped = Array.isArray(done && done.dropped) ? done.dropped : [];
   const unanswered = Array.isArray(done && done.unanswered) ? done.unanswered : [];
+  // An empty citable universe produces no prose at all, and every "none" line
+  // below reads as a clean bill of health unless it knows that. "Every sentence
+  // matched the spans it cites" is a lie about zero sentences.
+  const wroteNothing = turn.order.every((n) => {
+    const s = turn.sentences.get(n);
+    return !s || stripMarkers(s.raw) === '';
+  });
 
   box.appendChild(el('h3', null, 'What this answer does not carry'));
   box.appendChild(el('p', 'why-here',
     'Kept on screen on purpose. A short answer you can act on beats a fluent one you cannot check.'));
 
+  /* 0 · the run's own words. `note` co-occurs with an empty answer, so when it
+     is here there is nothing above this card and this line is the reader's only
+     explanation. It goes first, before any list. */
+  const note = (done && typeof done.note === 'string') ? done.note.trim() : '';
+  // When there is no prose the note is already standing where the answer would
+  // be (renderBlank). Printing it twice on one screen makes one explanation
+  // look like two findings.
+  if (note !== '' && !wroteNothing) {
+    const g0 = el('div', 'rgroup');
+    g0.appendChild(el('span', 'eyebrow', 'What the run said about itself'));
+    g0.appendChild(el('div', 'note', note));
+    box.appendChild(g0);
+  }
+
   /* 1 · sentences whose citations did not vouch for them */
   const g1 = el('div', 'rgroup');
   g1.appendChild(el('span', 'eyebrow', 'Could not be confirmed'));
-  if (turn.replayed) {
+  // `wroteNothing` is tested BEFORE `replayed`: a stored turn with no prose has
+  // no sentences whose verdicts could have been kept, and "verdicts are not
+  // stored" implies there were some.
+  if (wroteNothing) {
+    g1.appendChild(el('div', 'none',
+      'Nothing was written, so nothing was checked. This is not a clean run — it is an empty one.'));
+  } else if (turn.replayed) {
     g1.appendChild(el('div', 'none',
       'Per-sentence verdicts are not stored with an answer. Ask it again to re-run the checks.'));
   } else if (!flagged.length) {
@@ -993,9 +1248,17 @@ function renderRefusals(turn, done) {
   const g2 = el('div', 'rgroup');
   g2.appendChild(el('span', 'eyebrow', 'Dropped'));
   if (!dropped.length) {
-    g2.appendChild(el('div', 'none', has('dropped')
-      ? 'Nothing was dropped on this run.'
-      : 'Not reported by this run.'));
+    // THREE different empties, and collapsing them is the failure this card
+    // exists to avoid. A fast run has no claim-level drop stage AT ALL — spans
+    // are proven verbatim before a word is written, so no claim is ever written
+    // and then withdrawn. Printing "nothing was dropped" about a stage that
+    // does not exist reads as a gate that ran clean. It did not run.
+    g2.appendChild(el('div', 'none',
+      turn.mode === 'fast'
+        ? 'No drop stage on a fast run — every span is proven verbatim before the prose is written, so a claim is never written and then withdrawn. The drop list belongs to Verified mode.'
+        : has('dropped')
+          ? 'Nothing was dropped on this run.'
+          : 'Not reported by this run.'));
   } else {
     for (const d of dropped) {
       const row = el('div', 'drop');
@@ -1010,9 +1273,18 @@ function renderRefusals(turn, done) {
   const g3 = el('div', 'rgroup');
   g3.appendChild(el('span', 'eyebrow', 'Not answerable from these sources'));
   if (!unanswered.length) {
-    g3.appendChild(el('div', 'none', has('unanswered')
-      ? 'The retrieved pages covered the question as asked.'
-      : 'Not reported by this run.'));
+    // Three empties again, and the middle one is subtle: `epilogue` is sent
+    // ONLY when it has something, so a completed run with no frame is a run
+    // that named no gap — which is weaker than a gap check that ran and
+    // passed, and is written as the weaker thing.
+    g3.appendChild(el('div', 'none',
+      has('unanswered')
+        ? (wroteNothing
+            ? 'The run listed no gap — but it also wrote no answer, so read the reason above rather than this line.'
+            : 'The retrieved pages covered the question as asked.')
+        : (done && done.messageId)
+          ? 'This run named no gap. The gap list is only sent when there is one, so this is silence rather than a check that ran and passed.'
+          : 'Not reported by this run.'));
   } else {
     for (const u of unanswered) g3.appendChild(el('div', 'drop', String(u)));
   }
@@ -1021,19 +1293,35 @@ function renderRefusals(turn, done) {
   box.classList.remove('hidden');
 }
 
+/**
+ * Related questions, as chips that CONTINUE the thread rather than start one.
+ *
+ * `submit()` carries `S.threadId`, so a chip is a follow-up — which is the only
+ * reading that makes sense: the questions were generated from this answer's own
+ * spans, and answering them in a fresh thread would throw away the sources they
+ * came from and re-buy them.
+ *
+ * They are suggestions, not findings, and the footnote says so. A rail of
+ * confident-looking questions beside a cited answer borrows the answer's
+ * credibility; these are model-written and nothing checked them.
+ */
 function renderRelated(turn, done) {
   const rel = Array.isArray(done && done.related) ? done.related : [];
   const box = turn.els.related;
   box.replaceChildren();
   if (!rel.length) { box.classList.add('hidden'); return; }
-  box.appendChild(el('span', 'eyebrow', 'Related'));
+  box.appendChild(el('span', 'eyebrow', 'Ask next'));
+  const chips = el('div', 'chips');
   for (const r of rel) {
     const b = el('button', 'rq');
     b.appendChild(el('span', 'plus', '+'));
     b.appendChild(document.createTextNode(String(r)));
     b.addEventListener('click', () => submit(String(r)));
-    box.appendChild(b);
+    chips.appendChild(b);
   }
+  box.appendChild(chips);
+  box.appendChild(el('div', 'foot',
+    'Suggestions, not findings — written from this answer\u2019s spans and not checked against anything. Each one continues this thread.'));
   box.classList.remove('hidden');
 }
 
@@ -1049,9 +1337,13 @@ function renderActions(turn, done) {
   again.addEventListener('click', () => submit(turn.question));
   // §7.2 — thread bloat with no fork is their top complaint. Fork is first-class.
   const fork = el('button', null, 'Fork from here');
-  fork.addEventListener('click', () => { const q = turn.question; resetToEmpty(); submit(q); });
+  fork.title = 'Copy this thread up to and including this answer into a new one, and continue there.';
+  fork.addEventListener('click', () => { void forkTurn(turn, fork); });
 
-  box.append(copy, copyCited, again, fork);
+  box.append(copy, copyCited, again);
+  // A turn that never reached the store has nothing to fork FROM. Offering the
+  // button and then explaining it does not work is worse than not offering it.
+  if (!S.demo && (turn.threadId || S.threadId)) box.appendChild(fork);
 
   const bits = [];
   if (done && Number.isFinite(Number(done.costCents))) {
@@ -1061,6 +1353,79 @@ function renderActions(turn, done) {
   bits.push(turn.sources.length + ' sources');
   box.appendChild(el('span', 'cost', bits.join(' · ')));
   box.classList.remove('hidden');
+}
+
+/**
+ * FORK — §7.2, the gap Perplexity is most complained about.
+ *
+ * The server takes `{seq}`: everything up to and including that message is
+ * copied into a new thread, and the rest is left behind. `done` hands us a
+ * `messageId`, not a seq — deliberately, since seq is the store's ordering and
+ * not the wire's — so the seq is resolved from the transcript at fork time.
+ * That is one GET, on a click, and it is exact; counting turns in the browser
+ * would guess, and a fork that cuts one message off is a fork nobody trusts.
+ *
+ * If the route is not there yet, this degrades to what it did before: a new
+ * thread with the same question, and a toast that says the fork was not
+ * available rather than pretending the new thread is a fork of the old one.
+ */
+async function seqFor(threadId, messageId) {
+  if (!threadId || !messageId) return null;
+  try {
+    const res = await fetch('/api/threads/' + encodeURIComponent(threadId));
+    if (!res.ok) return null;
+    const detail = await res.json();
+    const m = (detail && Array.isArray(detail.messages) ? detail.messages : [])
+      .find((x) => x && x.id === messageId);
+    const n = m ? Number(m.seq) : NaN;
+    return Number.isFinite(n) ? n : null;
+  } catch { return null; }
+}
+
+async function forkTurn(turn, btn) {
+  const threadId = turn.threadId || S.threadId;
+  if (S.demo) { toast('Fork needs the real thread store — leave the demo to try it'); return; }
+  if (!threadId) { toast('Nothing to fork yet — this turn was never saved'); return; }
+
+  btn.disabled = true;
+  const fallback = (why) => {
+    // Honest degradation: the same question in a NEW thread, and a line saying
+    // that is what happened. Silently re-asking and calling it a fork would put
+    // a thread in the sidebar that claims a parent it does not have.
+    toast(why + ' — asking it again as a new thread instead');
+    const q = turn.question;
+    resetToEmpty();
+    submit(q);
+  };
+
+  try {
+    let seq = Number.isInteger(Number(turn.seq)) ? Number(turn.seq) : null;
+    if (seq === null) seq = await seqFor(threadId, turn.messageId);
+    if (seq === null || seq < 1) { fallback('Could not find this answer in the saved thread'); return; }
+    turn.seq = seq;
+
+    const res = await fetch('/api/threads/' + encodeURIComponent(threadId) + '/fork', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ seq }),
+    });
+    // 404 is the route not being there; 405 is it not taking POST. Both are
+    // "not built yet", and neither is worth a scary message.
+    if (res.status === 404 || res.status === 405) { fallback('Fork is not available on this server'); return; }
+    if (!res.ok) { fallback('The fork was refused (HTTP ' + res.status + ')'); return; }
+
+    const body = await res.json();
+    const id = String((body && body.id) || '');
+    if (!id) { fallback('The fork came back without a thread id'); return; }
+
+    await loadThreads();
+    await openThreadById(id);
+    toast('Forked at this answer — the thread you came from is untouched');
+  } catch {
+    fallback('Could not reach the fork endpoint');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function plainAnswer(turn, withSources) {
@@ -1228,6 +1593,11 @@ function submit(raw) {
   enterThreadView();
 
   const turn = newTurn(q);
+  turn.mode = S.mode;
+  // Captured at submit time, not at done: a follow-up belongs to the thread it
+  // was asked in, and `done` will confirm the same id back. Without this a turn
+  // that errors before `done` has no thread to fork from.
+  turn.threadId = S.threadId;
   S.turns.push(turn);
   S.live = turn;
   TURNS.set(turn.id, turn);
@@ -1237,6 +1607,10 @@ function submit(raw) {
 
   if (S.demo) { runDemo(turn); return; }
 
+  // `thread` is what makes this a FOLLOW-UP rather than a second conversation:
+  // the route loads the thread's messages as history, the planner resolves
+  // "and in Vancouver?" against them, and the prior sources are reused rather
+  // than re-bought. Its absence is what starts a thread.
   const url = S.endpoint + '?q=' + encodeURIComponent(q) +
     (S.threadId ? '&thread=' + encodeURIComponent(S.threadId) : '') +
     (S.mode === 'verified' ? '&mode=verified' : '');
@@ -1263,7 +1637,15 @@ function submit(raw) {
     finishTurn(turn, null);
     stopStream();
   });
-  on('done', (d) => { finishTurn(turn, d); stopStream(); nudgeScroll(false); });
+  on(EPILOGUE_EVENT, (d) => applyEpilogue(turn, d));
+  on('done', (d) => {
+    finishTurn(turn, d);
+    stopStream();
+    nudgeScroll(false);
+    // The thread this run just created (or extended) should appear in the list
+    // and be the one highlighted — otherwise the sidebar says you are nowhere.
+    void loadThreads();
+  });
 
   // `error` is EventSource's transport failure, never an application error —
   // which is exactly why the contract calls the other one `error_msg`.
@@ -1321,21 +1703,20 @@ const DEMO_SENTENCES = [
     why: 'The sources establish when contracts are signed and when interest rises. Neither says that reaching homeowners earlier wins the contract — that step is the model’s, not the page’s.' },
 ];
 
+/** `done` carries exactly the four fields the contract declares, and no more —
+ *  everything else moved to the coda, where the real pipeline puts it. */
 const DEMO_DONE = {
   costCents: 0.24,
   threadId: 'd1',
   messageId: 'm1',
   flagged: 1,
+};
+
+const DEMO_EPILOGUE = {
   related: [
     'What does a GTA snow-clearing visit actually cost a homeowner?',
     'Did Jiffy’s seasonal package sell out last winter?',
     'How early do Toronto landscapers start selling winter contracts?',
-  ],
-  dropped: [
-    { claim: 'Toronto households spend about $1,200 a year on snow removal alone.',
-      why: 'The cited page gives $1,161 for all home maintenance and repair, not snow removal. The number is real; the claim narrows it to something the page does not say.' },
-    { claim: 'Jiffy raised its snow-removal prices 12% this year.',
-      why: 'No fetched page contains a price for last season, so the comparison has nothing to stand on.' },
   ],
   unanswered: [
     'What a snow-clearing visit costs per visit in the GTA.',
@@ -1345,19 +1726,31 @@ const DEMO_DONE = {
 
 function at(ms, fn) { S.demoTimers.push(setTimeout(fn, ms)); }
 
+/**
+ * Timings and payload SHAPES corrected against a live run, 2026-08-31.
+ *
+ * What the scripted stream had wrong, and what the real one does:
+ *  · `searching.detail` is the queries joined by `·`, not one query per event.
+ *  · `reading.detail` is a bare count — `"33 result(s)"` — not a sentence.
+ *  · sources trickle at roughly 2.5s apart (a 2s-per-host politeness floor),
+ *    not 175ms. Held to 700ms here: long enough that the staggered reveal and
+ *    the running count are visibly doing their job, short enough that reviewing
+ *    the interface does not cost 30 seconds a run. It is a demo, not a clock.
+ *  · sentences are numbered FROM ZERO.
+ */
 function runDemo(turn) {
   let t = 0;
 
   at(t += 90, () => onStatus(turn, { phase: 'planning' }));
-  at(t += 560, () => onStatus(turn, { phase: 'searching', detail: 'tavily · “toronto snow removal seasonal contract timing”' }));
-  at(t += 420, () => onStatus(turn, { phase: 'searching', detail: 'tavily · “jiffy snow removal pricing toronto”' }));
-  at(t += 380, () => onStatus(turn, { phase: 'reading', detail: 'Reading sources…' }));
+  at(t += 560, () => onStatus(turn, { phase: 'searching',
+    detail: 'toronto snow removal seasonal contract timing · jiffy snow removal pricing toronto · taskrabbit toronto snow' }));
+  at(t += 800, () => onStatus(turn, { phase: 'reading', detail: '27 result(s)' }));
 
   // Sources land staggered, before a word of prose — this is the whole staging.
-  DEMO_SOURCES.forEach((s, i) => at(t + 140 + i * 175, () => { onSource(turn, s); nudgeScroll(false); }));
-  t += 140 + DEMO_SOURCES.length * 175;
+  DEMO_SOURCES.forEach((s, i) => at(t + 300 + i * 700, () => { onSource(turn, s); nudgeScroll(false); }));
+  t += 300 + DEMO_SOURCES.length * 700;
 
-  at(t += 240, () => onStatus(turn, { phase: 'attributing', detail: 'Pulling quotable spans…' }));
+  at(t += 240, () => onStatus(turn, { phase: 'attributing', detail: DEMO_SOURCES.length + ' document(s)' }));
   DEMO_SPANS.forEach((s, i) => at(t + 120 + i * 60, () => onSpan(turn, s)));
   t += 120 + DEMO_SPANS.length * 60;
 
@@ -1367,7 +1760,7 @@ function runDemo(turn) {
   // Chunked into token-sized pieces so the render loop is exercised the way a
   // real stream exercises it — including a marker split across two deltas.
   DEMO_SENTENCES.forEach((sent, idx) => {
-    const n = idx + 1;
+    const n = idx;                       // the server numbers from zero
     for (const piece of chunk(sent.text)) {
       t += 22 + Math.random() * 34;
       const ms = t;
@@ -1381,7 +1774,10 @@ function runDemo(turn) {
     }, settleAt));
   });
 
-  at(t + 1500, () => onStatus(turn, { phase: 'done' }));
+  at(t + 1400, () => onStatus(turn, { phase: 'done',
+    detail: DEMO_SENTENCES.length + ' sentence(s), 1 flagged' }));
+  // The epilogue arrives before `done`, which is where the real one sits.
+  at(t + 1550, () => applyEpilogue(turn, DEMO_EPILOGUE));
   at(t + 1700, () => { finishTurn(turn, DEMO_DONE); nudgeScroll(false); });
 }
 

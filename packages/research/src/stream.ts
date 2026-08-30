@@ -44,12 +44,32 @@
  *
  * `research()` is untouched and stays the Verified mode — whole-answer gate,
  * nothing shown until everything is checked. This is Fast mode beside it.
+ *
+ * ── AND WHAT CONVERSATION CHANGES, WHICH IS LESS THAN IT LOOKS ─────────────
+ *
+ * `deps.history` makes a follow-up planable: `follow-up.ts` resolves "and in
+ * Vancouver?" into a standalone question and standalone queries, and may say
+ * the pages the last turn read are still the right pages, which skips a search
+ * call. That is the entire concession. It reaches the PLANNER and the RETRIEVAL
+ * and stops there — phase B never sees a previous answer, phase A still proves
+ * every span against a document fetched in THIS run, and phase C still checks
+ * every sentence. A follow-up whose reused pages have stopped supporting it
+ * comes back short, flagged, or refused; there is no path by which a claim
+ * inherits an earlier turn's confidence.
  */
 import { checkCausalLanguage, checkHonesty } from '@tmos/guardrails';
 
 import type { AttributeLimits, CitableSpan, CitableUniverse, DroppedSpan } from './attribute.js';
 import { attribute } from './attribute.js';
-import type { DeltaEvent, SentenceEvent, SourceEvent, SpanEvent, StatusEvent } from './events.js';
+import type {
+  ConversationTurn,
+  DeltaEvent,
+  SentenceEvent,
+  SourceEvent,
+  SpanEvent,
+  StatusEvent,
+} from './events.js';
+import { planSearches, relatedQuestions, reuseUrls } from './follow-up.js';
 import type { ResearchLimits } from './pipeline.js';
 import { DEFAULT_LIMITS, dedupeHits } from './pipeline.js';
 import type { SentencePiece } from './sentences.js';
@@ -65,28 +85,6 @@ import type {
 import { claimNumbers } from './verify.js';
 
 /* ── phase B: the prompt ──────────────────────────────────────────────────── */
-
-/**
- * Planning, restated rather than imported.
- *
- * `pipeline.ts` keeps its own copy private and is deliberately not edited here:
- * `research()` is Verified mode and must keep behaving exactly as it does
- * today, and a shared constant makes any future tuning of Fast mode's planning
- * a silent change to Verified mode's. Two prompts that are allowed to diverge
- * is the cheaper of the two couplings.
- */
-const PLAN_SYSTEM = [
-  'You turn a marketing research question into web search queries.',
-  'Return JSON: {"queries":["...","..."],"unanswerable":["..."]}',
-  '',
-  'RULES',
-  '- Queries are what a researcher would type, not the question restated.',
-  '- Prefer queries that would surface PRIMARY sources: a company page, a',
-  '  government statistic, a filing, a job board. Not listicles.',
-  '- Vary the angle. Four near-identical queries retrieve one document.',
-  '- Put in "unanswerable" any part of the question the open web cannot settle',
-  '  (our own revenue, a private company\'s margins, anyone\'s intent).',
-].join('\n');
 
 /**
  * The generation prompt. Three properties matter and each is load-bearing:
@@ -337,7 +335,8 @@ class MarkerGate {
 /* ── the pipeline ─────────────────────────────────────────────────────────── */
 
 export interface StreamDeps {
-  /** Planning and attribution — whole replies, parsed as JSON. */
+  /** Planning, attribution and the related-question pass — whole replies,
+   *  parsed as JSON. */
   readonly ask: AskPort;
   /** Generation only. A separate port on purpose: see `AskStreamPort`. */
   readonly askStream: AskStreamPort;
@@ -345,6 +344,18 @@ export interface StreamDeps {
   readonly read: ReadPort;
   readonly limits?: ResearchLimits;
   readonly attributeLimits?: AttributeLimits;
+  /**
+   * The turns before this one, oldest first. Absent or empty means a first
+   * question, and the run then plans, searches and reads exactly as it did
+   * before conversation existed — that equivalence is tested, because a
+   * follow-up feature that quietly changes the first answer is a regression
+   * nobody would look for.
+   *
+   * History reaches the PLANNER and nothing else. It never reaches phase B:
+   * see the note above the generation call for why that boundary is the real
+   * defence and the per-sentence checks are only the backstop.
+   */
+  readonly history?: readonly ConversationTurn[];
   readonly onStatus?: (e: StatusEvent) => void;
   readonly onSource?: (e: SourceEvent) => void;
   readonly onSpan?: (e: SpanEvent) => void;
@@ -366,22 +377,28 @@ export interface StreamedAnswer {
   readonly flagged: number;
   readonly queries: readonly string[];
   readonly unanswered: readonly string[];
+  /**
+   * Questions to ask next, each grounded in a span this run proved. Returned
+   * rather than emitted as an event because `events.ts` is the wire contract
+   * three parallel pieces already agreed on, and a new event name is a change
+   * to all three; the route can carry these on `done` or in the message row.
+   */
+  readonly related: readonly string[];
+  /** URLs read because a previous turn had read them, not because this run's
+   *  search found them. Empty on a first question. Surfaced so "why is this
+   *  answer built out of those pages?" has an answer that is not a guess. */
+  readonly reused: readonly string[];
   /** Non-empty when there is no answer and the reader is owed the reason. */
   readonly note: string;
   readonly costCents: number;
 }
 
-const parseJson = (text: string): Record<string, unknown> => {
-  try {
-    const v: unknown = JSON.parse(text);
-    return typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
-};
-
-const strings = (v: unknown): string[] =>
-  Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+/** Tags a reading-list entry that came from a previous turn rather than from a
+ *  search this run. A provider name and not a boolean flag, because that is
+ *  what `SearchHit` already carries and it lets a reused URL travel through
+ *  `dedupeHits` — where a search result for the same page collapses into it —
+ *  without a second, parallel notion of "already have this one". */
+const REUSE_PROVIDER = 'prior-turn';
 
 /** Shown on the source card. A URL we cannot parse is one we still fetched, so
  *  it keeps its place in the list rather than vanishing from the count. */
@@ -404,6 +421,7 @@ const domainOf = (url: string): string => {
  */
 export async function streamAnswer(question: string, deps: StreamDeps): Promise<StreamedAnswer> {
   const limits = deps.limits ?? DEFAULT_LIMITS;
+  const history = deps.history ?? [];
   const status = deps.onStatus ?? ((): void => undefined);
   const emitSource = deps.onSource ?? ((): void => undefined);
   const emitSpan = deps.onSpan ?? ((): void => undefined);
@@ -412,6 +430,7 @@ export async function streamAnswer(question: string, deps: StreamDeps): Promise<
 
   let cost = 0;
   const sources: ReadDoc[] = [];
+  const reused: string[] = [];
   let queries: string[] = [];
   let cannot: string[] = [];
 
@@ -427,39 +446,66 @@ export async function streamAnswer(question: string, deps: StreamDeps): Promise<
       flagged: 0,
       queries,
       unanswered: cannot,
+      related: [],
+      reused,
       note,
       costCents: cost,
     };
   };
 
-  /* 1 ─ plan */
+  /* 1 ─ plan. With history this also resolves the follow-up into a standalone
+   *       question and decides whether the last turn's pages still apply. */
   status({ phase: 'planning' });
-  const planned = await deps.ask.ask(PLAN_SYSTEM, question, 700);
-  if (!planned) return stop('The model was unavailable or the budget ceiling refused the call.');
-  cost += planned.costCents;
-  const plan = parseJson(planned.text);
-  queries = strings(plan['queries']).slice(0, limits.maxQueries);
-  cannot = strings(plan['unanswerable']);
-  if (queries.length === 0) {
+  const plan = await planSearches(question, history, deps.ask, limits.maxQueries);
+  cost += plan.costCents;
+  if (plan.note !== '') return stop(plan.note);
+  queries = [...plan.queries];
+  cannot = [...plan.unanswerable];
+
+  // The URL list is reused; the page text never is. `reuseUrls` carries the
+  // argument — every reused page is fetched again, so a follow-up is answered
+  // out of the page as it is now and every span is still proven against a
+  // document THIS run read.
+  const reusable = reuseUrls(history, plan, limits.maxPages);
+  if (queries.length === 0 && reusable.length === 0) {
     return stop('Could not turn that into a search. Try naming a company, a market or a period.');
   }
 
-  /* 2 ─ search */
-  status({ phase: 'searching', detail: queries.join(' · ') });
+  /* 2 ─ search, unless the follow-up needs nothing new */
   const hits: SearchHit[] = [];
-  for (const q of queries) {
-    for (const provider of deps.search) {
-      try {
-        hits.push(...(await provider.search(q, limits.maxPages)));
-      } catch (err) {
-        status({
-          phase: 'searching',
-          detail: `${provider.name} failed: ${err instanceof Error ? err.message : String(err)}`,
-        });
+  if (queries.length === 0) {
+    // The no-new-retrieval case. The phase is still announced so the client's
+    // staged reveal keeps the same shape, and the detail says plainly that no
+    // search was run — a silent skip would look like a fast search.
+    status({
+      phase: 'searching',
+      detail: `no new search — re-reading the ${reusable.length} page(s) the previous answer used`,
+    });
+  } else {
+    status({ phase: 'searching', detail: queries.join(' · ') });
+    for (const q of queries) {
+      for (const provider of deps.search) {
+        try {
+          hits.push(...(await provider.search(q, limits.maxPages)));
+        } catch (err) {
+          status({
+            phase: 'searching',
+            detail: `${provider.name} failed: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
       }
     }
   }
-  const unique = dedupeHits(hits);
+
+  // Reused URLs go through `dedupeHits` alongside the search results, and go in
+  // FIRST. That does both halves of the job with the canonicalisation the
+  // pipeline already uses: known-good pages are read before speculative ones,
+  // and a search result we had already read collapses into the reused entry
+  // instead of being fetched a second time.
+  const unique = dedupeHits([
+    ...reusable.map((url) => ({ title: '', url, snippet: '', provider: REUSE_PROVIDER })),
+    ...hits,
+  ]);
   if (unique.length === 0) {
     return stop('No search results. The providers returned nothing for those queries.');
   }
@@ -471,6 +517,7 @@ export async function streamAnswer(question: string, deps: StreamDeps): Promise<
     const doc = await deps.read.read(h.url);
     if (doc === null || doc.text.trim().length < 200) continue;
     sources.push({ ...doc, text: doc.text.slice(0, limits.maxCharsPerPage) });
+    if (h.provider === REUSE_PROVIDER) reused.push(h.url);
     // Emitted the moment it is read, not at the end: the staged reveal is the
     // product, and a source card is the first thing this run can honestly show.
     emitSource({
@@ -481,12 +528,27 @@ export async function streamAnswer(question: string, deps: StreamDeps): Promise<
     });
   }
   if (sources.length === 0) {
-    return stop('Found results but could not read any of them — refused by robots.txt, or assembled in a browser.');
+    // A reuse-only follow-up whose pages have all gone — rotted links, a
+    // changed robots.txt — stops here. The tempting alternative is to answer
+    // from the previous turn, which is available, on-topic and already written.
+    // It is also unverifiable: not one word of it is a span this run proved, so
+    // an answer built from it would wear badges it did not earn. Refusing is
+    // the whole point of the design.
+    return stop(
+      queries.length === 0
+        ? 'Could not re-read any of the pages the previous answer used, and this follow-up needed no new search — so there is nothing to answer from. The earlier answer is context, not evidence.'
+        : 'Found results but could not read any of them — refused by robots.txt, or assembled in a browser.',
+    );
   }
 
-  /* 4 ─ attribute: prove the quotes before any prose exists */
+  /* 4 ─ attribute: prove the quotes before any prose exists.
+   *
+   * Against the STANDALONE question, not the literal follow-up: "and in
+   * Vancouver?" selects no spans at all, because the extraction pass reads the
+   * question only to decide which sentences are relevant and those four words
+   * are relevant to nothing. */
   status({ phase: 'attributing', detail: `${sources.length} document(s)` });
-  const universe = await attribute(question, sources, {
+  const universe = await attribute(plan.standalone, sources, {
     ask: deps.ask,
     ...(deps.attributeLimits ? { limits: deps.attributeLimits } : {}),
   });
@@ -533,9 +595,34 @@ export async function streamAnswer(question: string, deps: StreamDeps): Promise<
     .map((s) => `[${s.id}] (source ${s.docIndex} — ${sources[s.docIndex - 1]?.title ?? ''})\n"${s.span}"`)
     .join('\n\n');
 
+  // ── THE CONVERSATION STOPS HERE, AND THIS IS THE LOAD-BEARING PART ────────
+  //
+  // Phase B is handed the standalone question and the spans. It is NOT handed
+  // the conversation, and specifically not the previous answer — even though
+  // that answer is on-topic, already written, and would make a follow-up read
+  // more naturally.
+  //
+  // Phase C is not sufficient on its own here. Its number check catches a
+  // FIGURE carried across from an earlier turn, because the figure has to
+  // appear in a span cited this run. It catches nothing about a claim with no
+  // figure in it: "Jiffy is the larger of the two" copied out of the previous
+  // answer, marked with a citation to a page re-read this run that no longer
+  // says it, passes every check in `checkSentence` and renders confirmed. The
+  // only defence against that is structural — the sentence cannot be copied
+  // from prose the model was never shown.
+  //
+  // So the conversation buys better retrieval and a resolved question, and buys
+  // no shortcut whatsoever on evidence. If the reused pages have stopped
+  // supporting the earlier claim, this turn is short or flagged, which is the
+  // correct outcome and the one the conversation must not be able to soften.
+  const asked =
+    plan.standalone === question
+      ? `QUESTION: ${question}`
+      : `QUESTION: ${plan.standalone}\n(the reader typed this as a follow-up: "${question}")`;
+
   const written = await deps.askStream.askStream(
     GEN_SYSTEM,
-    `QUESTION: ${question}\n\nSPANS — the only things you may cite:\n\n${spans}`,
+    `${asked}\n\nSPANS — the only things you may cite:\n\n${spans}`,
     GEN_MAX_TOKENS,
     feed,
   );
@@ -575,6 +662,15 @@ export async function streamAnswer(question: string, deps: StreamDeps): Promise<
   }
 
   const flagged = sentences.filter((s) => s.verdict === 'flagged').length;
+
+  // 6 ─ what to ask next. Last, and out of the spans rather than the prose:
+  // a suggestion sits in a rail that reads like navigation, which is the most
+  // credulous place on the page, and an ungrounded one there is an uncited
+  // claim wearing a question mark. `bindRelated` refuses anything the proven
+  // quotes do not name — including a figure they do not carry.
+  const suggested = await relatedQuestions(plan.standalone, universe.spans, sources, deps.ask);
+  cost += suggested.costCents;
+
   status({ phase: 'done', detail: `${sentences.length} sentence(s), ${flagged} flagged` });
 
   return {
@@ -587,6 +683,8 @@ export async function streamAnswer(question: string, deps: StreamDeps): Promise<
     flagged,
     queries,
     unanswered: cannot,
+    related: suggested.related,
+    reused,
     note,
     costCents: cost,
   };

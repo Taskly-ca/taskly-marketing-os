@@ -29,17 +29,27 @@ import type {
   SourceEvent,
   SpanEvent,
 } from '@tmos/research';
-import type { MessageRecord, NewMessage, NewThread, ThreadDetail, ThreadRecord } from '@tmos/adapters';
+import type {
+  CitationRecord,
+  MessageRecord,
+  NewMessage,
+  NewThread,
+  ThreadDetail,
+  ThreadRecord,
+} from '@tmos/adapters';
 
 import {
   AnswerBusy,
   AnswerGuard,
   answerKey,
   citationsFor,
+  epilogueFor,
+  historyFor,
   runAnswerStream,
   titleFor,
   type AnswerDeps,
   type AnswerStore,
+  type EpilogueEvent,
   type StreamAnswerFn,
 } from './answer-route.js';
 import type { SseSink } from './sse.js';
@@ -82,15 +92,20 @@ class FakeStore implements AnswerStore {
   async getThread(id: string): Promise<ThreadDetail | null> {
     const head = this.threads.find((t) => t.id === id);
     if (!head) return null;
-    return { ...head, messages: [] };
+    // The stored turns, not an empty list: the history a follow-up is answered
+    // against is read back out of here, so a store that forgets them would make
+    // every history assertion below vacuously true.
+    const messages = this.messages
+      .filter((m) => m.threadId === id)
+      .map((m, i) => this.record(m, i + 1));
+    return { ...head, messages };
   }
 
-  async appendMessage(m: NewMessage): Promise<MessageRecord> {
-    this.messages.push(m);
+  private record(m: NewMessage, seq: number): MessageRecord {
     return {
       id: m.id,
       threadId: m.threadId,
-      seq: this.messages.length,
+      seq,
       role: m.role,
       body: m.body,
       mode: m.mode ?? null,
@@ -100,6 +115,11 @@ class FakeStore implements AnswerStore {
       createdAt: m.createdAt,
       citations: m.citations ?? [],
     };
+  }
+
+  async appendMessage(m: NewMessage): Promise<MessageRecord> {
+    this.messages.push(m);
+    return this.record(m, this.messages.length);
   }
 }
 
@@ -404,5 +424,258 @@ describe('runAnswerStream', () => {
     await runAnswerStream(sink, { question: ASK.question, threadId: 'no-such-thread' }, d);
     expect(frames.map((f) => f.event)).toEqual(['error_msg']);
     expect(d.store.threads).toHaveLength(0);
+  });
+});
+
+/* ── conversation history ───────────────────────────────────────────────── */
+
+const CITE: CitationRecord = {
+  ordinal: 1,
+  sourceUrl: 'https://example.ca/report',
+  span: 'the market grew 12% in 2025',
+  title: 'GTA home services 2026',
+};
+
+let mid = 0;
+const msg = (over: Partial<MessageRecord>): MessageRecord => ({
+  id: `m-${++mid}`,
+  threadId: 't-1',
+  seq: mid,
+  role: 'user',
+  body: 'q',
+  mode: null,
+  runId: null,
+  costCents: 0,
+  answer: null,
+  createdAt: '2026-08-31T12:00:00.000Z',
+  citations: [],
+  ...over,
+});
+
+const answered = (body: string, over: Partial<MessageRecord> = {}): MessageRecord =>
+  msg({ role: 'assistant', mode: 'fast', body, ...over });
+
+const detail = (messages: readonly MessageRecord[]): ThreadDetail => ({
+  id: 't-1',
+  title: 'a thread',
+  titleSource: 'question',
+  forkedFromMessageId: null,
+  createdAt: '2026-08-31T12:00:00.000Z',
+  updatedAt: '2026-08-31T12:00:00.000Z',
+  archivedAt: null,
+  messages,
+});
+
+describe('historyFor', () => {
+  it('pairs each question with the answer that followed it, oldest first', () => {
+    const turns = historyFor(
+      detail([
+        msg({ body: 'How large is the GTA market?' }),
+        answered('About $2bn [1].'),
+        msg({ body: 'And in Vancouver?' }),
+        answered('Smaller [1].'),
+      ]),
+    );
+    expect(turns.map((t) => t.question)).toEqual(['How large is the GTA market?', 'And in Vancouver?']);
+    expect(turns.map((t) => t.answer)).toEqual(['About $2bn [1].', 'Smaller [1].']);
+  });
+
+  it('keeps the [N] markers in the answer it sends back', () => {
+    // `events.ts` is explicit about this: "where did that price come from?" is
+    // a question ABOUT the marker, and a history that stripped it cannot answer.
+    const [turn] = historyFor(detail([msg({ body: 'q' }), answered('Jiffy charges $129 [2].')]));
+    expect(turn?.answer).toContain('[2]');
+  });
+
+  it('carries the URLs that turn read, documents first, deduped', () => {
+    const [turn] = historyFor(
+      detail([
+        msg({ body: 'q' }),
+        answered('a [1].', {
+          answer: {
+            points: [],
+            dropped: [],
+            unanswered: [],
+            sources: [{ url: 'https://example.ca/report', title: 't', text: 'x' }],
+            queries: [],
+          },
+          citations: [CITE, { ...CITE, ordinal: 2, sourceUrl: 'https://other.ca/p' }],
+        }),
+      ]),
+    );
+    // A follow-up on the same subject should not re-search from nothing.
+    expect(turn?.sourceUrls).toEqual(['https://example.ca/report', 'https://other.ca/p']);
+  });
+
+  it('drops a question whose run died rather than reporting it answered with silence', () => {
+    const turns = historyFor(
+      detail([msg({ body: 'first' }), answered('an answer'), msg({ body: 'crashed' })]),
+    );
+    expect(turns.map((t) => t.question)).toEqual(['first']);
+  });
+
+  it('keeps a contiguous SUFFIX when the thread is long — never a hole in the middle', () => {
+    const messages: MessageRecord[] = [];
+    for (let i = 1; i <= 9; i += 1) {
+      messages.push(msg({ body: `q${i}` }), answered(`a${i}`));
+    }
+    const turns = historyFor(detail(messages));
+
+    expect(turns).toHaveLength(6);
+    // The newest six, adjacent and in order. A sampled or head-plus-tail
+    // history still reads as a conversation and is a different one.
+    expect(turns.map((t) => t.question)).toEqual(['q4', 'q5', 'q6', 'q7', 'q8', 'q9']);
+  });
+
+  it('drops from the oldest end when the text budget binds, before the turn count does', () => {
+    const long = 'x'.repeat(5_000);
+    const messages: MessageRecord[] = [];
+    for (let i = 1; i <= 4; i += 1) messages.push(msg({ body: `q${i}` }), answered(`${long}${i}`));
+
+    const turns = historyFor(detail(messages));
+    expect(turns.length).toBeLessThan(4);
+    expect(turns.at(-1)?.question).toBe('q4');
+    // Whatever survived is still adjacent: the kept questions are the tail.
+    const kept = turns.map((t) => t.question);
+    expect(kept).toEqual(['q1', 'q2', 'q3', 'q4'].slice(-kept.length));
+  });
+
+  it('sends the newest turn whole even when it alone exceeds the budget', () => {
+    const huge = 'x'.repeat(40_000);
+    const turns = historyFor(detail([msg({ body: 'q' }), answered(huge)]));
+    // Half an answer is not a shorter answer — it is a different one, missing
+    // exactly the markers a follow-up is usually about.
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.answer).toHaveLength(40_000);
+  });
+
+  it('is empty for a thread nobody has answered in yet', () => {
+    expect(historyFor(detail([]))).toEqual([]);
+    expect(historyFor(detail([msg({ body: 'only a question' })]))).toEqual([]);
+  });
+});
+
+describe('runAnswerStream — the follow-up gets the thread', () => {
+  it('passes no history on the first question and the prior turn on the second', async () => {
+    const seen: { question: string; history: readonly { question: string; answer: string }[] }[] = [];
+    const spy: StreamAnswerFn = async (q, dep) => {
+      seen.push({ question: q, history: dep.history });
+      return happyStream(q, dep);
+    };
+    const d = deps({ streamAnswer: spy });
+
+    await runAnswerStream(recorder().sink, ASK, d);
+    const threadId = d.store.threads[0]?.id ?? '';
+    await runAnswerStream(recorder().sink, { question: 'And in Vancouver?', threadId }, d);
+
+    expect(seen[0]?.history).toEqual([]);
+    expect(seen[1]?.history).toEqual([
+      {
+        question: ASK.question,
+        answer: 'The market grew 12% [1]. Supply is thinner in the east.',
+        sourceUrls: [SOURCE.url],
+      },
+    ]);
+  });
+
+  it('loads the history BEFORE recording the new question, so it is not in its own context', async () => {
+    const asked: string[][] = [];
+    const spy: StreamAnswerFn = async (q, dep) => {
+      asked.push(dep.history.map((h) => h.question));
+      return happyStream(q, dep);
+    };
+    const d = deps({ streamAnswer: spy });
+    await runAnswerStream(recorder().sink, ASK, d);
+    const threadId = d.store.threads[0]?.id ?? '';
+    await runAnswerStream(recorder().sink, { question: 'And in Vancouver?', threadId }, d);
+
+    // The follow-up sees the turn before it and not itself — the user message
+    // is appended after the history is read, and a history containing the
+    // question being asked would make every follow-up look like a repeat.
+    expect(asked[1]).toEqual([ASK.question]);
+  });
+});
+
+/* ── the epilogue frame ─────────────────────────────────────────────────── */
+
+describe('epilogueFor', () => {
+  it('says nothing when there is nothing to say', () => {
+    expect(epilogueFor({ text: 'a', costCents: 1 })).toBeNull();
+    expect(epilogueFor({ text: 'a', costCents: 1, unanswered: [], note: '  ', related: [] })).toBeNull();
+  });
+
+  it('carries the refusals the done event could not', () => {
+    // Annotated, because this shape is the thing the UI agent codes against —
+    // if it drifts, this line is what stops it drifting silently.
+    const e: EpilogueEvent | null = epilogueFor({
+      text: 'a',
+      costCents: 1,
+      unanswered: ['what Jiffy charges in Vancouver', '  '],
+      note: '',
+    });
+    expect(e).toEqual({ unanswered: ['what Jiffy charges in Vancouver'], note: '', related: [] });
+  });
+
+  it('relays related questions and invents none', () => {
+    expect(epilogueFor({ text: 'a', costCents: 1, related: ['What does Jiffy charge?'] })?.related).toEqual([
+      'What does Jiffy charge?',
+    ]);
+    // The pipeline returns none today. Emitting a plausible list here would be
+    // the console generating ungrounded text under a derived-looking heading.
+    expect(epilogueFor({ text: 'a', costCents: 1, unanswered: ['x'] })?.related).toEqual([]);
+  });
+});
+
+describe('runAnswerStream — the epilogue on the wire', () => {
+  const rich: StreamAnswerFn = async (q, dep) => ({
+    ...(await happyStream(q, dep)),
+    unanswered: ['what Jiffy charges in Vancouver'],
+    related: ['How fast is Jiffy growing?'],
+  });
+
+  it('emits epilogue immediately before done, once', async () => {
+    const { frames, sink } = recorder();
+    await runAnswerStream(sink, ASK, deps({ streamAnswer: rich }));
+
+    const names = frames.map((f) => f.event);
+    expect(names.filter((n) => n === 'epilogue')).toHaveLength(1);
+    expect(names.at(-2)).toBe('epilogue');
+    expect(names.at(-1)).toBe('done');
+    expect(frames.at(-2)?.data).toEqual({
+      unanswered: ['what Jiffy charges in Vancouver'],
+      note: '',
+      related: ['How fast is Jiffy growing?'],
+    });
+  });
+
+  it('leaves done exactly as the contract froze it', async () => {
+    const { frames, sink } = recorder();
+    await runAnswerStream(sink, ASK, deps({ streamAnswer: rich }));
+    expect(Object.keys(frames.at(-1)?.data as object).sort()).toEqual([
+      'costCents',
+      'flagged',
+      'messageId',
+      'threadId',
+    ]);
+  });
+
+  it('sends no epilogue when the run had no refusals and no related questions', async () => {
+    const { frames, sink } = recorder();
+    await runAnswerStream(sink, ASK, deps());
+    expect(frames.map((f) => f.event)).not.toContain('epilogue');
+  });
+
+  it('explains an empty answer, which is the case with nothing else on screen', async () => {
+    const silent: StreamAnswerFn = async () => ({
+      text: '',
+      costCents: 1,
+      note: 'No search results. The providers returned nothing for those queries.',
+    });
+    const { frames, sink } = recorder();
+    await runAnswerStream(sink, ASK, deps({ streamAnswer: silent }));
+
+    const epilogue = frames.at(-2);
+    expect(epilogue?.event).toBe('epilogue');
+    expect((epilogue?.data as { note: string }).note).toContain('No search results');
   });
 });
