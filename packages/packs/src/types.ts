@@ -78,6 +78,34 @@ export interface WatchTarget {
   readonly sitemap?: { readonly url: string; readonly prefix: string };
 }
 
+/**
+ * A recurring window this domain's demand actually moves in.
+ *
+ * Seasonality is domain data, not a gate — which is the test for whether it
+ * belongs in a pack. GTA snow removal and Indian monsoon prep are the same
+ * SHAPE and share no content, so hardcoding either in the core would be the
+ * thing Part 10 exists to prevent. The `platform` pack declares none, and that
+ * is the proof the field is genuinely optional rather than Canada with a
+ * default.
+ *
+ * WHAT A WINDOW IS NOT: evidence that anything happened. A calendar entry is
+ * something we wrote down, so a recommendation resting only on one can never
+ * rise above `exploratory_unverified`. It is a REASON TO LOOK, and the draft
+ * treats it that way.
+ */
+export interface SeasonWindow {
+  /** What people buy. Reads inside a sentence: "demand for <name> opens…". */
+  readonly name: string;
+  /** Inclusive month numbers, 1–12. `starts > ends` wraps the new year. */
+  readonly startsMonth: number;
+  readonly endsMonth: number;
+  /** How many weeks BEFORE the window supply has to be in place. Recruiting a
+   *  snow crew the week it snows is the mistake this number exists to name. */
+  readonly leadWeeks: number;
+  /** Why this window matters here, in the words that go in a draft. */
+  readonly why: string;
+}
+
 export interface PackScoring {
   readonly corridor: GeoCorridor;
   /** Named rivals. A weak signal alone — a farm naming one is still a farm. */
@@ -99,6 +127,9 @@ export interface DomainPack {
   readonly sources: readonly PackSource[];
   readonly targets: readonly WatchTarget[];
   readonly scoring: PackScoring;
+  /** Recurring demand windows. Absent for a domain that has none — the
+   *  `platform` pack watches services, and services have no season. */
+  readonly calendar?: readonly SeasonWindow[];
 }
 
 /** True when a change in this measure may be published as a Finding. */

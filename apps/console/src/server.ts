@@ -32,6 +32,7 @@ import { createPostgresPredictionStore, createResolverContext } from '@tmos/adap
 
 import { readState } from './queries.js';
 import { runResearch } from './research-route.js';
+import { runDraft } from './draft-route.js';
 import { Runner, RunBusy, isStage } from './runner.js';
 
 /** dist/ sits one level under the app, so the repo root is three up. */
@@ -203,6 +204,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   }
 
   if (path === '/api/stream') return stream(res);
+
+  if (path === '/api/draft') return runDraft(res);
 
   if (path === '/api/research') {
     // GET, because EventSource cannot POST. The question rides in the query

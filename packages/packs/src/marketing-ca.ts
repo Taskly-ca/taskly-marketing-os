@@ -20,7 +20,14 @@ import {
 } from '@tmos/collectors';
 import { GTA_CORRIDOR, DEFAULT_COMPETITORS } from '@tmos/reason';
 
-import { UNSTATED, type DomainPack, type Measure, type PackSource, type WatchTarget } from './types.js';
+import {
+  UNSTATED,
+  type DomainPack,
+  type Measure,
+  type PackSource,
+  type SeasonWindow,
+  type WatchTarget,
+} from './types.js';
 
 const YES_NO = ['yes', 'no', UNSTATED] as const;
 
@@ -169,6 +176,39 @@ const TARGETS: readonly WatchTarget[] = [
   },
 ];
 
+const SEASONS: readonly SeasonWindow[] = [
+  {
+    name: 'snow removal and winter maintenance',
+    startsMonth: 11, endsMonth: 3, leadWeeks: 8,
+    why: 'The GTA winter is the one season where demand is weather-triggered and supply must already exist. A crew recruited in December is a crew that missed November.',
+  },
+  {
+    name: 'spring cleaning and yard reset',
+    startsMonth: 3, endsMonth: 5, leadWeeks: 4,
+    why: 'The largest recurring cleaning spike of the year, and the entry point most first-time posters use.',
+  },
+  {
+    name: 'moving season',
+    startsMonth: 5, endsMonth: 9, leadWeeks: 4,
+    why: 'Toronto leases turn over heavily on 1 May and 1 July. Moving help, furniture assembly and junk removal move together.',
+  },
+  {
+    name: 'lawn, garden and outdoor work',
+    startsMonth: 5, endsMonth: 9, leadWeeks: 3,
+    why: 'Long, steady and low-urgency — the window that rewards being listed rather than being fast.',
+  },
+  {
+    name: 'back to school and student moves',
+    startsMonth: 8, endsMonth: 9, leadWeeks: 5,
+    why: 'A concentrated student influx across the GTA campuses, buying small moves, assembly and cleaning in the same fortnight.',
+  },
+  {
+    name: 'holiday preparation and hosting',
+    startsMonth: 11, endsMonth: 12, leadWeeks: 5,
+    why: 'Deep cleaning, light installation and decorating, compressed into weeks and highly deadline-driven.',
+  },
+];
+
 export const marketingCanada: DomainPack = {
   id: 'marketing-ca',
   region: 'ca',
@@ -186,4 +226,14 @@ export const marketingCanada: DomainPack = {
   sources: SOURCES,
   targets: TARGETS,
   scoring: { corridor: GTA_CORRIDOR, competitors: DEFAULT_COMPETITORS },
+  /**
+   * The GTA year, as a marketplace experiences it.
+   *
+   * `leadWeeks` is the number that earns this its place. Every one of these
+   * windows is obvious the week it opens and useless by then — supply has to
+   * be recruited before demand arrives, and the whole point of putting a
+   * calendar in front of a reasoner is that it can say "eight weeks out" while
+   * there is still time to act.
+   */
+  calendar: SEASONS,
 };

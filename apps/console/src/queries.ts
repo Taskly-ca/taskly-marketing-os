@@ -74,7 +74,14 @@ export async function readState(): Promise<ConsoleState> {
            f.evidence->>'url' as url, f.evidence->>'snippet' as span,
            to_char(lower(f.valid), 'YYYY-MM-DD HH24:MI') as since, f.method
       from fact f join entity e on e.id = f.entity_id
-     where upper_inf(f.asserted) and f.status = 'active'
+     -- BITEMPORAL, BOTH AXES. "upper_inf(asserted)" alone means "we never
+     -- retracted this", which is NOT "this is true now": the world changing
+     -- closes "valid", and a closed "valid" is a PAST state we deliberately
+     -- kept. Reading only the asserted axis showed Handy in seven contradictory
+     -- city lists at once and called all of them current — 43 rows where the
+     -- world model holds 29. AGENTS.md rule 3 names this exact conflation as
+     -- the single most damaging error available here.
+     where upper_inf(f.asserted) and upper_inf(f.valid) and f.status = 'active'
      order by e.name, f.predicate`);
 
   const findings = await db().query<FindingRow>(sql`

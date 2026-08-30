@@ -143,6 +143,17 @@
   .drop{padding:9px 0;border-bottom:1px dashed var(--line);color:var(--muted);font-size:13px}
   .drop:last-child{border-bottom:0}
   .drop b{font-weight:500;color:var(--faint);text-decoration:line-through}
+  .rec{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+       padding:16px 18px;margin-bottom:12px;border-left:3px solid var(--brass)}
+  .rec.thin{border-left-color:var(--line)}
+  .rec h3{font-size:15px;margin-bottom:6px}
+  .rec .why{color:var(--muted);margin-bottom:9px}
+  .fals{padding:9px 12px;background:var(--ground);border-radius:9px;font-size:12.5px;
+        color:var(--muted);margin-bottom:9px}
+  .fals b{font-weight:500;color:var(--ink)}
+  .evrow{font-size:12px;color:var(--muted);padding:5px 0;border-top:1px solid var(--line)}
+  .evrow .k{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+            color:var(--brass);margin-right:8px}
   .drop em{display:block;font-style:normal;font-size:12px;color:var(--moved);margin-top:3px}
 </style>
 </head>
@@ -181,7 +192,8 @@
   </div>
 
   <nav class="tabs" id="tabs">
-    <button data-tab="research" aria-selected="true">Research</button>
+    <button data-tab="draft" aria-selected="true">This week</button>
+    <button data-tab="research" aria-selected="false">Research</button>
     <button data-tab="findings" aria-selected="false">What changed <span class="n" id="n-findings"></span></button>
     <button data-tab="competitors" aria-selected="false">Competitors <span class="n" id="n-facts"></span></button>
     <button data-tab="forecasts" aria-selected="false">Forecasts <span class="n" id="n-preds"></span></button>
@@ -189,7 +201,27 @@
   </nav>
 
   <main>
-    <section class="panel on" data-panel="research">
+    <section class="panel on" data-panel="draft">
+      <p class="lead">What to work on, drawn from what has actually been observed —
+      competitor changes, their pages, the season, and our own documents. Every
+      recommendation names the evidence it rests on and what would show it was the wrong
+      call. Ones that could not carry either are listed as dropped.</p>
+
+      <div class="card">
+        <button class="primary" id="dgo">Draft this week</button>
+        <span class="hint" id="dcost" style="margin-left:12px"></span>
+        <div id="derr"></div>
+      </div>
+
+      <div class="card hidden" id="dsteps">
+        <div class="eyebrow">Working</div>
+        <pre class="steps" id="dlog"></pre>
+      </div>
+
+      <div id="dout"></div>
+    </section>
+
+    <section class="panel" data-panel="research">
       <p class="lead">Ask a marketing or market question. It plans searches, reads the pages
       it is allowed to read, and answers <em>only</em> from what it retrieved — every point
       quoted from a page you can open. Points it could not source are listed as dropped
@@ -515,6 +547,80 @@ function renderAnswer(a) {
       <h3>${esc(a.summary || 'No answer could be sourced.')}</h3>
       ${pts || '<p class="hint">No point survived verification. That usually means the pages retrieved did not address the question — try naming a company, a city or a period.</p>'}
     </article>${dropped}${unanswered}${sources}`;
+}
+
+/* ── the weekly draft ──────────────────────────────────────────────────── */
+let dEs = null;
+
+$('#dgo').onclick = () => {
+  if (dEs) dEs.close();
+  $('#derr').innerHTML = ''; $('#dout').innerHTML = ''; $('#dlog').textContent = '';
+  $('#dsteps').classList.remove('hidden');
+  $('#dgo').disabled = true; $('#dgo').textContent = 'Drafting…'; $('#dcost').textContent = '';
+
+  dEs = new EventSource('/api/draft');
+  dEs.addEventListener('step', (e) => {
+    $('#dlog').textContent += JSON.parse(e.data) + '\n';
+    $('#dlog').scrollTop = $('#dlog').scrollHeight;
+  });
+  dEs.addEventListener('error_msg', (e) => {
+    $('#derr').innerHTML = `<div class="err">${esc(JSON.parse(e.data))}</div>`;
+  });
+  dEs.addEventListener('draft', (e) => renderDraft(JSON.parse(e.data)));
+  const done = () => { $('#dgo').disabled = false; $('#dgo').textContent = 'Draft this week'; if (dEs) { dEs.close(); dEs = null; } };
+  dEs.addEventListener('draft', done);
+  dEs.addEventListener('error_msg', done);
+  dEs.onerror = done;
+};
+
+const BASIS = {
+  inferred_from_sources: 'rests on something observed',
+  exploratory_unverified: 'rests only on our own calendar and documents',
+};
+
+function renderDraft(d) {
+  $('#dcost').textContent = d.costCents ? d.costCents.toFixed(3) + '¢' : '';
+  const byId = Object.fromEntries(d.evidence.map(e => [e.id, e]));
+
+  const recs = d.recommendations.map(r => `
+    <article class="rec ${r.basis === 'inferred_from_sources' ? '' : 'thin'}">
+      <h3>${esc(r.action)}</h3>
+      <div class="why">${esc(r.reasoning)}</div>
+      <div class="fals"><b>Wrong if:</b> ${esc(r.falsifier)}</div>
+      <div class="meta">
+        <span class="tag">${esc(BASIS[r.basis] || r.basis)}</span>
+        <span>horizon: ${esc(r.horizon)}</span>
+      </div>
+      ${r.evidence.map(id => {
+        const e = byId[id];
+        if (!e) return '';
+        return `<div class="evrow"><span class="k">${esc(e.kind)}</span>${esc(e.text.slice(0, 210))}
+          ${e.source && e.source.startsWith('http')
+            ? `<a href="${esc(e.source)}" target="_blank" rel="noreferrer noopener"> ↗</a>`
+            : `<span class="hint"> — ${esc(e.source)}</span>`}</div>`;
+      }).join('')}
+    </article>`).join('');
+
+  const dropped = d.dropped.length ? `
+    <article class="card">
+      <h3>Dropped — proposed, but could not carry its own evidence</h3>
+      <p class="hint">Shown rather than removed. These are the recommendations a system
+      without a gate would have handed you as if they were the same as the others.</p>
+      ${d.dropped.map(x => `<div class="drop"><b>${esc(x.action)}</b><em>${esc(x.why)}</em></div>`).join('')}
+    </article>` : '';
+
+  const file = `
+    <article class="card">
+      <h3>Evidence file <span class="tag">${d.evidence.length}</span></h3>
+      <p class="hint">Everything the reasoner was given. It knows nothing else.</p>
+      ${d.evidence.map(e => `<div class="evrow"><span class="k">${esc(e.kind)}</span>${esc(e.text.slice(0, 190))}</div>`).join('')}
+    </article>`;
+
+  $('#dout').innerHTML =
+    (d.note ? `<article class="card"><h3>${esc(d.note)}</h3></article>` : '') +
+    (recs || (d.recommendations.length === 0 && !d.note
+      ? '<div class="empty">Nothing survived the gate this week.</div>' : '')) +
+    dropped + file;
 }
 
 /* ── boot ──────────────────────────────────────────────────────────────── */

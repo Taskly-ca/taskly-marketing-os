@@ -41,12 +41,21 @@ importers:
       '@tmos/adapters':
         specifier: workspace:*
         version: link:../../packages/adapters
+      '@tmos/brain':
+        specifier: workspace:*
+        version: link:../../packages/brain
       '@tmos/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@tmos/draft':
+        specifier: workspace:*
+        version: link:../../packages/draft
       '@tmos/intel':
         specifier: workspace:*
         version: link:../../packages/intel
+      '@tmos/packs':
+        specifier: workspace:*
+        version: link:../../packages/packs
       '@tmos/research':
         specifier: workspace:*
         version: link:../../packages/research
@@ -188,6 +197,18 @@ importers:
       '@tmos/contracts':
         specifier: workspace:*
         version: link:../contracts
+
+  packages/draft:
+    dependencies:
+      '@tmos/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@tmos/guardrails':
+        specifier: workspace:*
+        version: link:../guardrails
+      '@tmos/packs':
+        specifier: workspace:*
+        version: link:../packs
 
   packages/gate: {}
 
