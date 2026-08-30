@@ -57,7 +57,21 @@ import {
 
 export type MessageRole = 'user' | 'assistant';
 /** Fast = per-sentence checks; Verified = the whole-answer verbatim gate. */
-export type AnswerMode = 'fast' | 'verified';
+/**
+ * How an answer was produced. Widened for `grounded` by migration 016.
+ *
+ * THE ORDER MATTERS AND IT IS NOT THE OBVIOUS ONE. This union is a decode gate:
+ * `asUnion` THROWS on a value it does not list, and `getThread` is both what
+ * renders a thread and what `historyFor` reads a follow-up's context from. So a
+ * mode written to the database but missing from this list does not degrade —
+ * it makes its own thread permanently unreadable, which is strictly worse than
+ * the mislabelling it was meant to fix.
+ *
+ * Consequence, for whoever adds the next mode: widen this FIRST and ship it,
+ * then start writing the new value. A migration that admits a mode the reader
+ * refuses is a trap that only springs after the row exists.
+ */
+export type AnswerMode = 'fast' | 'verified' | 'grounded';
 /**
  * Where a thread's title came from. `user` is a rename and outranks the other
  * two forever — see 015 on why a later auto-titler needs to be able to tell.
@@ -65,7 +79,7 @@ export type AnswerMode = 'fast' | 'verified';
 export type TitleSource = 'question' | 'user' | 'generated';
 
 const ROLES = ['user', 'assistant'] as const;
-const MODES = ['fast', 'verified'] as const;
+const MODES = ['fast', 'verified', 'grounded'] as const;
 const TITLE_SOURCES = ['question', 'user', 'generated'] as const;
 
 /**

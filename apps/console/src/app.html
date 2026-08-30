@@ -41,39 +41,210 @@
   reviewed from a screenshot of a finished answer — and because a UI you can
   only exercise by paying for a 60-second pipeline run is a UI nobody exercises.
 -->
+<script>
+/* ══ THEME, RESOLVED BEFORE THE FIRST PAINT ════════════════════════════════
+
+   This runs in <head>, ahead of the stylesheet, for one reason: a theme
+   applied from the bottom of <body> paints the light page first and then
+   repaints it dark, and that flash is the single most visible way a theme
+   control can look broken.
+
+   Three states, not two. `system` is the default and is not the same thing as
+   whichever colour the system happens to be right now — it is a standing
+   instruction to follow the OS, so it keeps listening. `light` and `dark` are
+   the reader overruling that.
+
+   What is stamped on <html>:
+     data-theme       the RESOLVED theme — only ever `light` or `dark`.
+                      The stylesheet reads this and nothing else, so there is
+                      exactly one dark block in the CSS instead of one per
+                      selector-and-media-query pair that has to be kept in sync.
+     data-theme-pref  what the reader actually chose, so the control can show
+                      System as pressed while the page renders dark.
+
+   EVERY storage access is wrapped. `localStorage` does not merely come back
+   empty in a private window or with site data blocked — the getter itself
+   THROWS, and an unhandled throw here, before the stylesheet, is a blank page.
+   So a failed read is not an error condition: it means `system`, which is the
+   default anyway. */
+(function () {
+  var KEY = 'tmos:theme';
+  var root = document.documentElement;
+  var mq = null;
+  try { mq = window.matchMedia('(prefers-color-scheme: dark)'); } catch (e) { mq = null; }
+
+  var read = function () {
+    try {
+      var v = localStorage.getItem(KEY);
+      return (v === 'light' || v === 'dark' || v === 'system') ? v : 'system';
+    } catch (e) { return 'system'; }
+  };
+
+  var T = {
+    pref: read(),
+    resolve: function (p) { return p === 'system' ? ((mq && mq.matches) ? 'dark' : 'light') : p; },
+    /** Stamp, then persist. Persisting is best-effort — a reader in a private
+     *  window still gets the theme they clicked, for this session. */
+    set: function (p, persist) {
+      T.pref = (p === 'light' || p === 'dark') ? p : 'system';
+      root.setAttribute('data-theme', T.resolve(T.pref));
+      root.setAttribute('data-theme-pref', T.pref);
+      if (persist) { try { localStorage.setItem(KEY, T.pref); } catch (e) { /* private window */ } }
+    },
+  };
+
+  T.set(T.pref, false);
+  // Only meaningful while the choice is `system`: the OS flipping at sunset
+  // should carry the page with it, without a reload.
+  if (mq && mq.addEventListener) {
+    mq.addEventListener('change', function () { if (T.pref === 'system') T.set('system', false); });
+  }
+  window.TMOS_THEME = T;
+})();
+</script>
 <style>
-  /* ── tokens: carried from ui.html unchanged ───────────────────────────── */
+  /* ── tokens ───────────────────────────────────────────────────────────
+     TASKLY'S PALETTE, READ OFF THE CODE THAT DEFINES IT — `app/globals.css`
+     in the Taskly repo (`@theme` for light, `.dark` for dark), not off a
+     design doc. What was here before was carried from `ui.html`, which
+     predates the 2026-07-21 gold retune: its `#b8860b` is CSS's own
+     `darkgoldenrod`, not Taskly's honey gold, and its dark mode was a cool
+     blue-grey (`#0e1114` / `#161a1e`) that belongs to no Taskly surface.
+
+     Values live in ONE place. `:root` is the complete light palette; the
+     single `[data-theme="dark"]` block below redefines the same names. There
+     is no `prefers-color-scheme` block: the head script resolves the media
+     query itself and stamps `data-theme`, so a token can never be defined in
+     a media query and nowhere else — the classic way a theme half-applies.
+
+     THE RAMPS, and why each has three rungs rather than a colour per element:
+       ground / ground-soft / surface   elevation. In dark this is the ONLY
+                                        elevation cue there is — see below.
+       ink / muted / faint              text. `faint` is the floor and it is a
+                                        real text colour: #5E5E5E is the
+                                        lightest the design system allows on
+                                        light, and every rung clears 7:1.
+       brass / brass-ink / brass-solid  the accent, split by JOB. `brass` is
+                                        for marks and borders, `brass-ink` is
+                                        gold AS TEXT (deepened on light,
+                                        lightened on dark, because 9.5px of
+                                        #B8873A on cream is not readable), and
+                                        `brass-solid` is the filled pill. */
   :root{
-    --ground:#faf7f2; --surface:#ffffff; --line:#e8e2d8;
-    --ink:#14120f; --muted:#6b6459; --faint:#9c948699;
-    --brass:#b8860b; --hold:#2c6b50; --moved:#a04d1a;
-    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-    --sans:"Manrope",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    --radius:16px;
-    /* hover is a wash, never a fill — the founder rule */
-    --wash:#14120f0a;
-    --brass-tint:#b8860b14;
+    color-scheme:light;
+
+    /* Surfaces — the documented hierarchy: canvas → adjacent → elevated card. */
+    --ground:#FAFAFA;        /* cream — page canvas */
+    --ground-soft:#F3F3F3;   /* cream-dark — an inset, one step BELOW the card */
+    --surface:#FFFFFF;       /* the elevated card */
+
+    --line:rgba(13,13,13,.11);
+    /* Hover borders and dashed outlines used to reach for --faint, which is a
+       TEXT token; a 1px dash at text contrast reads as a scribble. */
+    --line-strong:rgba(13,13,13,.24);
+
+    --ink:#0D0D0D;           /* rich black — headings, prose */
+    --muted:#3A3A3A;         /* secondary sentences */
+    --faint:#5E5E5E;         /* mono metadata, eyebrows, fine print — the floor */
+
+    --brass:#B8873A;         /* honey gold — marks, rules, the caret */
+    --brass-ink:#8A6414;     /* gold AS TEXT on light — deepened to hold contrast */
+    --brass-solid:#C9A878;   /* the champagne fill of a chosen thing */
+    --on-brass:#161311;      /* text on that fill — never white: #fff on gold is 2.9:1 */
+    --brass-tint:rgba(184,135,58,.10);
+    --brass-line:rgba(184,135,58,.30);
+
+    --hold:#2C6E63;          /* confirmed */
+    --moved:#A6421C;         /* unconfirmed. Kept clear of the gold hue on purpose:
+                                brass already means "confirmed", and two warm
+                                browns a few degrees apart at 9.5px is one channel
+                                carrying two meanings. */
+
+    /* Hover is a WASH, never a fill — the founder rule. Rich black is reserved
+       for the pressed state and for the selected thread, which is what --press
+       is: the same ink, further up. */
+    --wash:rgba(13,13,13,.05);
+    --press:rgba(13,13,13,.12);
+
     /* The fill that says "ours". A wash alone survives light and vanishes in
        dark — seen on the first dark-mode render of the grounded strip, where
        the Brain cards were all but invisible beside their neighbours. It is a
-       FILL, not an accent: the brass stays reserved for citations. */
-    --ours-fill:#14120f0f;
-    --shadow:0 1px 2px #14120f0a, 0 8px 24px #14120f0a;
+       FILL, not an accent: the brass stays reserved for citations. What it has
+       to preserve in both themes is BORDERLESS AND FILLED, which is the form
+       that means "inside the page, not on it". */
+    --ours-fill:#F1F1F1;
+
+    --shadow:0 1px 2px rgba(13,13,13,.04), 0 8px 24px rgba(13,13,13,.07);
+
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:"Manrope",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --radius:16px;
   }
-  @media (prefers-color-scheme:dark){
-    :root:not([data-theme="light"]){
-      --ground:#0e1114; --surface:#161a1e; --line:#272d33;
-      --ink:#e7ebee; --muted:#939da5; --faint:#6c767e;
-      --brass:#cba347; --hold:#5aa886; --moved:#d17b45;
-      --wash:#e7ebee12; --brass-tint:#cba34720; --ours-fill:#242c33;
-      --shadow:0 1px 2px #0006, 0 8px 24px #0004;
-    }
+
+  /* ── dark: designed, not inverted ─────────────────────────────────────────
+     Four things do not survive a swap of the light values, and each one is a
+     line below rather than a rule of thumb:
+
+     1. ELEVATION STOPS BEING A SHADOW. On #000 a black shadow is invisible,
+        so a card cannot sit "above" the page by casting one. It sits above by
+        being LIGHTER: #000 canvas → #1C1C1C card, with a hairline of light
+        along the top edge doing the job the shadow used to do.
+
+     2. BORDERS LIGHTEN. A darker line on a dark ground is a line that is not
+        there; every border becomes white at low alpha.
+
+     3. THE GOLD CHANGES LUMINANCE. #B8873A on black is a muddy 4.6:1 and reads
+        brown; the accent is champagne #CDAC7C here, which is exactly what the
+        design system ships. Gold-as-text lightens further still.
+
+     4. INSET INVERTS. `--ground-soft` is BELOW the card on light and stays
+        below on dark — #161616 under a #1C1C1C card — but `--ours-fill` goes
+        the other way, UP to #232323, because the thing it must never be is
+        indistinguishable from the canvas. Borderless-and-filled is the part
+        that carries the meaning; which side of the surface it sits on is not. */
+  :root[data-theme="dark"]{
+    color-scheme:dark;
+
+    --ground:#000000;        /* pure black — the canvas Taskly's dark shells use */
+    --ground-soft:#161616;
+    --surface:#1C1C1C;       /* the elevated card */
+
+    --line:rgba(250,250,250,.16);
+    --line-strong:rgba(250,250,250,.34);
+
+    --ink:#FAFAFA;
+    --muted:#C8CBD0;
+    --faint:#9AA0A6;         /* still 7.4:1 on the card, 8.6:1 on the canvas */
+
+    --brass:#CDAC7C;         /* champagne */
+    --brass-ink:#E0C79A;     /* gold as text on dark */
+    --brass-solid:#CDAC7C;   /* near-identical to light's fill, on purpose:
+                                a chosen pill reads as the SAME highlight in
+                                both themes */
+    --on-brass:#161311;
+    --brass-tint:rgba(205,172,124,.16);
+    --brass-line:rgba(205,172,124,.35);
+
+    --hold:#5FBBAD;
+    --moved:#E9925B;
+
+    --wash:rgba(250,250,250,.07);
+    --press:rgba(250,250,250,.17);
+    --ours-fill:#262626;   /* a real step up from the #1C1C1C card beside it */
+
+    /* The top hairline is the elevation. The drop is only there to seat the
+       card; on black it does almost nothing and is not asked to. */
+    --shadow:inset 0 1px 0 rgba(250,250,250,.06), 0 12px 32px rgba(0,0,0,.66);
   }
+
   *{box-sizing:border-box}
   html,body{height:100%}
   body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
        font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
   h1,h2,h3{font-weight:600;margin:0;letter-spacing:-.014em}   /* 600 is the ceiling */
+  /* 600 is the ceiling EVERYWHERE, and a bare <b> defaults to 700. The steps
+     list builds one from a string, and the refusal rows build several. */
+  b,strong{font-weight:600}
   a{color:inherit}
   .eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;
            text-transform:uppercase;color:var(--faint)}
@@ -81,11 +252,15 @@
   button{font:inherit;font-size:13px;padding:7px 14px;border-radius:999px;
          border:1px solid var(--line);background:var(--surface);color:var(--ink);
          cursor:pointer;transition:background .14s ease,border-color .14s ease,transform .06s ease}
-  button:hover:not(:disabled){background:var(--wash);border-color:var(--faint)}
-  button:active:not(:disabled){transform:translateY(1px)}
+  button:hover:not(:disabled){background:var(--wash);border-color:var(--line-strong)}
+  /* The one place the rich black is allowed to land: the press. */
+  button:active:not(:disabled){background:var(--press);transform:translateY(1px)}
   button:disabled{opacity:.42;cursor:not-allowed}
-  button.primary{background:var(--brass);border-color:var(--brass);color:#fff}
-  button.primary:hover:not(:disabled){background:var(--brass);filter:brightness(1.07)}
+  /* Champagne fill, rich-black label. White on gold is 2.9:1 — it was
+     unreadable at 15px and the arrow was the most important control here. */
+  button.primary{background:var(--brass-solid);border-color:var(--brass-solid);color:var(--on-brass)}
+  button.primary:hover:not(:disabled){background:var(--brass-solid);filter:brightness(1.06)}
+  button.primary:active:not(:disabled){background:var(--brass-solid);filter:brightness(.94)}
   :focus-visible{outline:2px solid var(--brass);outline-offset:2px;border-radius:6px}
 
   /* ── shell ────────────────────────────────────────────────────────────── */
@@ -96,22 +271,45 @@
   .side-head{padding:16px 16px 12px;display:flex;flex-direction:column;gap:2px}
   .side-head h1{font-size:14.5px}
   .side-new{margin:0 12px 10px;text-align:left;display:flex;align-items:center;gap:8px}
-  .side-new .plus{font-family:var(--mono);color:var(--brass)}
+  .side-new .plus{font-family:var(--mono);color:var(--brass-ink)}
   .side-lab{padding:6px 18px 6px;display:flex;align-items:center;gap:8px}
   .threads{flex:1;overflow:auto;padding:2px 8px 14px;min-height:0}
   .thread{display:block;width:100%;text-align:left;border:0;background:none;border-radius:10px;
           padding:8px 10px;color:var(--muted);font-size:13px;line-height:1.35;
           white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .thread:hover{background:var(--wash);border-color:transparent}
-  .thread[aria-current="true"]{background:var(--wash);color:var(--ink)}
+  /* Selected nav is the other place the rich black is reserved for. A wash for
+     both left "hovered" and "you are here" looking identical. */
+  .thread[aria-current="true"]{background:var(--press);color:var(--ink)}
   .thread small{display:block;font-family:var(--mono);font-size:9.5px;color:var(--faint);
                 letter-spacing:.08em;margin-top:2px}
   .side-note{padding:4px 18px 16px;color:var(--faint);font-size:12px;line-height:1.5}
-  .side-foot{border-top:1px solid var(--line);padding:10px 14px;display:flex;
-             align-items:center;gap:8px;flex-wrap:wrap}
+  .side-foot{border-top:1px solid var(--line);padding:10px 14px 12px;display:flex;
+             flex-direction:column;align-items:flex-start;gap:9px}
+  .side-links{display:flex;align-items:center;gap:5px 14px;flex-wrap:wrap}
   .side-foot a{font-family:var(--mono);font-size:10px;letter-spacing:.1em;
                text-transform:uppercase;color:var(--faint);text-decoration:none}
-  .side-foot a:hover{color:var(--brass)}
+  .side-foot a:hover{color:var(--brass-ink)}
+
+  /* ── the theme control ────────────────────────────────────────────────────
+     Three states, because two cannot express "follow the system" — and a tool
+     someone leaves open all day is exactly where that matters, since the OS
+     flips under it at sunset.
+
+     One connected pill rather than three loose chips: it is a set of mutually
+     exclusive states, which is the same control the mode pills above are, and
+     two conventions for one idea in one sidebar is how a control stops being
+     read. Deliberately the quietest thing in the window — mono, 9.5px, sitting
+     under the utility links. This is a research tool, not a settings panel. */
+  .theme{display:flex;gap:2px;border:1px solid var(--line);border-radius:999px;
+         padding:2px;align-self:flex-start;max-width:100%}
+  .theme button{border:0;background:none;padding:3px 9px;border-radius:999px;
+                font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+                text-transform:uppercase;color:var(--faint);line-height:1.5}
+  .theme button:hover{background:var(--wash);color:var(--ink)}
+  .theme button:active{background:var(--press)}
+  .theme button[aria-pressed="true"]{background:var(--brass-tint);color:var(--brass-ink)}
+
 
   .main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
 
@@ -125,7 +323,7 @@
   .prompt{border:1px solid var(--line);background:var(--surface);border-radius:999px;
           padding:8px 14px;font-size:12.5px;color:var(--muted);text-align:left;
           max-width:100%;white-space:normal;line-height:1.4}
-  .prompt:hover{background:var(--wash);color:var(--ink)}
+  .prompt:hover{background:var(--wash);color:var(--ink);border-color:var(--line-strong)}
 
   /* ── the box ──────────────────────────────────────────────────────────── */
   .box{display:flex;align-items:flex-end;gap:8px;background:var(--surface);
@@ -140,7 +338,7 @@
            font-size:15px;line-height:1}
   .modes{display:flex;gap:2px;border:1px solid var(--line);border-radius:999px;padding:2px;flex:none}
   .modes button{border:0;padding:4px 10px;font-size:11.5px;color:var(--muted);background:none}
-  .modes button[aria-pressed="true"]{background:var(--brass-tint);color:var(--brass)}
+  .modes button[aria-pressed="true"]{background:var(--brass-tint);color:var(--brass-ink)}
   .modes button:hover{background:var(--wash)}
 
   /* ── thread view ──────────────────────────────────────────────────────── */
@@ -188,11 +386,11 @@
        transition:opacity .34s ease,transform .34s cubic-bezier(.16,1,.3,1),
                   background .14s ease,border-color .14s ease}
   .src.in{opacity:1;transform:none}
-  .src:hover{background:var(--wash);border-color:var(--faint)}
+  .src:hover{background:var(--wash);border-color:var(--line-strong)}
   .src .top{display:flex;align-items:center;gap:6px;margin-bottom:5px}
   .fav{width:14px;height:14px;border-radius:3px;flex:none;object-fit:cover}
   .fav-fb{width:14px;height:14px;border-radius:3px;flex:none;display:grid;place-items:center;
-          background:var(--brass-tint);color:var(--brass);font-family:var(--mono);
+          background:var(--brass-tint);color:var(--brass-ink);font-family:var(--mono);
           font-size:8.5px;line-height:1;text-transform:uppercase}
   .src .dom{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--faint);
             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
@@ -220,16 +418,18 @@
   /* The caveat belongs to the GROUP, not to each card. Printed on every card
      it became four copies of one sentence and pushed the answer off screen —
      which is how a caveat stops being read. */
-  .ghint{display:block;font-size:11.5px;line-height:1.45;color:var(--faint);
+  .ghint{display:block;font-size:11.5px;line-height:1.45;color:var(--muted);
          margin:0 0 8px;max-width:64ch}
-  .src.k-world{border-left:2px solid var(--faint)}
+  /* Neutral on purpose. The brass is spoken for by the verdict, and a gold
+     edge here would put KIND on the colour channel too. */
+  .src.k-world{border-left:2px solid var(--line-strong)}
   .src.k-brain{background:var(--ours-fill);border-color:transparent}
-  .src.k-ledger{background:transparent;border-style:dashed}
+  .src.k-ledger{background:transparent;border-style:dashed;border-color:var(--line-strong)}
   /* No href, so no pointer, no hover-lift: the card must not promise a click
      it cannot honour. */
   .src.internal{cursor:default}
   .src.internal:hover{background:var(--ours-fill);border-color:var(--line)}
-  .src.k-ledger:hover{border-color:var(--faint)}
+  .src.k-ledger:hover{border-color:var(--line-strong);background:var(--wash)}
   .kmark{width:14px;height:14px;border-radius:3px;flex:none;display:grid;place-items:center;
          background:var(--wash);color:var(--muted);font-family:var(--mono);font-size:9px;
          line-height:1;font-weight:500}
@@ -239,17 +439,19 @@
   .src .when{display:block;font-family:var(--mono);font-size:9px;letter-spacing:.09em;
              text-transform:uppercase;color:var(--faint);margin-top:5px}
   /* Says, in words, what the form is hinting. Never omitted. */
-  .src .cant{display:block;font-size:11px;line-height:1.45;color:var(--faint);margin-top:5px}
+  .src .cant{display:block;font-size:11px;line-height:1.45;color:var(--muted);margin-top:5px}
   .src .copy{margin-top:7px;padding:2px 8px;font-family:var(--mono);font-size:9px;
              letter-spacing:.09em;text-transform:uppercase;border-radius:6px}
 
   /* the key. Only the rows for kinds actually on screen. */
   .legend{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0 0 16px;padding:9px 12px;
-          border:1px dashed var(--line);border-radius:11px;background:var(--surface)}
+          border:1px dashed var(--line-strong);border-radius:11px;background:var(--surface)}
   .legend span{font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:6px}
-  .legend i{font-style:normal;font-family:var(--mono);font-size:10px;color:var(--brass);
+  .legend i{font-style:normal;font-family:var(--mono);font-size:10px;color:var(--brass-ink);
             background:var(--brass-tint);border-radius:5px;padding:2px 5px;line-height:1}
-  .legend i.u{background:none;border-bottom:1px dotted var(--faint);border-radius:0;
+  /* currentColor, matching the badge itself: the dotted rule is the FORM, and
+     it takes whatever colour the verdict has already put on the marker. */
+  .legend i.u{background:none;border-bottom:1px dotted currentColor;border-radius:0;
               color:var(--muted);padding:1px 2px}
 
   /* ── prose + citations ────────────────────────────────────────────────── */
@@ -262,14 +464,14 @@
       border-radius:5px;cursor:pointer;border:1px solid transparent;
       transition:background .18s ease,color .18s ease,border-color .18s ease;
       user-select:none}
-  .cb.pending{color:var(--faint);border-color:var(--line);border-style:dashed;
+  .cb.pending{color:var(--faint);border-color:var(--line-strong);border-style:dashed;
               animation:breathe 1.5s ease-in-out infinite}
   @keyframes breathe{0%,100%{opacity:1}50%{opacity:.45}}
-  .cb.confirmed{color:var(--brass);background:var(--brass-tint);border-color:transparent}
+  .cb.confirmed{color:var(--brass-ink);background:var(--brass-tint);border-color:transparent}
   .cb.stored{color:var(--muted);background:var(--wash);border-color:transparent}
   .cb.flagged{color:var(--moved);background:transparent;border-color:var(--moved);
               border-style:dotted}
-  .cb:hover{filter:brightness(1.1);border-color:var(--brass)}
+  .cb:hover{background:var(--press);border-color:var(--brass)}
   /* KIND on the marker itself. The glyph rides in front of the number and
      inherits the verdict colour, so the two channels never fight. */
   .cb .g{font-size:.86em;opacity:.72;margin-right:.5px}
@@ -306,7 +508,10 @@
   .tip .top{display:flex;align-items:center;gap:6px;margin-bottom:5px}
   .tip .dom{font-family:var(--mono);font-size:10px;letter-spacing:.06em;color:var(--faint)}
   .tip .ttl{font-size:13px;line-height:1.35;margin-bottom:8px}
-  .tip blockquote{margin:0 0 8px;padding:8px 11px;background:var(--ground);
+  /* --ground-soft, not --ground: on light the canvas and the card are a
+     shade apart, and the quote has to read as INSET into the tip. On dark it
+     is the one surface that goes DOWN from the card. */
+  .tip blockquote{margin:0 0 8px;padding:8px 11px;background:var(--ground-soft);
                   border-left:2px solid var(--brass);border-radius:0 8px 8px 0;
                   font-size:12px;line-height:1.5;color:var(--muted)}
   .tip .loc{font-family:var(--mono);font-size:10px;line-height:1.45;color:var(--muted);
@@ -336,7 +541,9 @@
   .drop b{font-weight:500;color:var(--faint);text-decoration:line-through}
   .drop em{display:block;font-style:normal;font-size:12px;color:var(--moved);margin-top:3px}
   .drop .qt{display:block;font-size:12.5px;color:var(--ink);margin-bottom:3px}
-  .none{color:var(--faint);font-size:12.5px;padding:4px 0}
+  /* These are full sentences and they carry the honesty of the card, so they
+     sit on the text ramp rather than the metadata one. */
+  .none{color:var(--muted);font-size:12.5px;padding:4px 0}
   .rgroup .note{color:var(--ink);font-size:13px;line-height:1.55;padding:4px 0}
 
   /* ── related + actions ────────────────────────────────────────────────── */
@@ -346,8 +553,8 @@
   .rq{border:1px solid var(--line);background:var(--surface);border-radius:999px;
       padding:7px 14px;font-size:12.5px;color:var(--muted);text-align:left;
       max-width:100%;white-space:normal;line-height:1.4}
-  .rq:hover{background:var(--wash);color:var(--ink);border-color:var(--faint)}
-  .rq .plus{color:var(--brass);font-family:var(--mono);margin-right:7px}
+  .rq:hover{background:var(--wash);color:var(--ink);border-color:var(--line-strong)}
+  .rq .plus{color:var(--brass-ink);font-family:var(--mono);margin-right:7px}
   .related .foot{color:var(--faint);font-size:11.5px;margin-top:9px}
   .actions{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:22px}
   .actions .cost{margin-left:auto;font-family:var(--mono);font-size:10px;letter-spacing:.1em;
@@ -355,7 +562,7 @@
   /* An answer that is empty ON PURPOSE. Not an error — the run worked, read
      its documents and found nothing it could quote. Dashed, muted, and clearly
      not prose, so it is never mistaken for the answer. */
-  .blank{border:1px dashed var(--line);border-radius:12px;padding:12px 15px;
+  .blank{border:1px dashed var(--line-strong);border-radius:12px;padding:12px 15px;
          color:var(--muted);font-size:13.5px;line-height:1.55;background:var(--surface)}
   .blank b{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.11em;
            text-transform:uppercase;font-weight:500;color:var(--faint);margin-bottom:5px}
@@ -364,9 +571,9 @@
   .err b{display:block;font-family:var(--mono);font-size:9.5px;letter-spacing:.11em;
          text-transform:uppercase;font-weight:500;margin-bottom:3px}
 
-  .banner{background:var(--brass-tint);border-bottom:1px solid var(--line);
+  .banner{background:var(--brass-tint);border-bottom:1px solid var(--brass-line);
           padding:7px 24px;font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;
-          text-transform:uppercase;color:var(--brass);display:flex;gap:12px;align-items:center}
+          text-transform:uppercase;color:var(--brass-ink);display:flex;gap:12px;align-items:center}
   .banner .spacer{flex:1}
   .toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,10px);z-index:70;
          background:var(--ink);color:var(--ground);font-size:12.5px;padding:8px 15px;
@@ -406,11 +613,18 @@
     <div class="threads" id="threads"></div>
     <div class="side-note hidden" id="threadNote"></div>
     <div class="side-foot">
-      <a href="/" title="The old dashboard">Classic console</a>
-      <span class="eyebrow">·</span>
-      <a href="?demo=1" title="Replay a scripted web run with no server">Demo</a>
-      <span class="eyebrow">·</span>
-      <a href="?demo=1&amp;mode=grounded" title="Replay a scripted grounded run — all four source kinds">Demo · grounded</a>
+      <!-- The interpuncts between these went when the theme pill arrived: at
+           246px the row has always wrapped, and a separator stranded at the end
+           of the first line reads as a missing link. Spacing separates them. -->
+      <div class="side-links">
+        <a href="/" title="The old dashboard">Classic console</a>
+        <a href="?demo=1" title="Replay a scripted web run with no server">Demo</a>
+        <a href="?demo=1&amp;mode=grounded" title="Replay a scripted grounded run — all four source kinds">Demo · grounded</a>
+      </div>
+      <!-- Built from THEME_OPTIONS in the script, the same way the mode pills
+           are: one table, one control, no chance of the labels and the values
+           drifting apart. -->
+      <div class="theme" id="themePick" role="group" aria-label="Theme"></div>
     </div>
   </aside>
 
@@ -801,6 +1015,65 @@ function setMode(key) {
 
 mountModes();
 setMode(S.mode);
+
+/* ══ theme ═════════════════════════════════════════════════════════════════
+
+   The state lives on <html>, put there by the head script before the first
+   paint; this is only the control that writes it. Two attributes, and the
+   difference between them is the whole reason there are three buttons:
+   `data-theme-pref` is what the reader chose and is what the pill reflects,
+   `data-theme` is what that currently resolves to and is what the CSS reads.
+   With System pressed, the second one changes under the first.
+
+   Nothing here touches localStorage directly — TMOS_THEME.set owns the
+   try/catch, because a blocked or full store must lose the PREFERENCE, never
+   the page. If the head script somehow did not run, every call below no-ops
+   and the page stays light rather than throwing. */
+
+const THEME_OPTIONS = [
+  { key: 'system', label: 'System', title: 'Follow the operating system, and keep following it if it changes.' },
+  { key: 'light', label: 'Light', title: 'Always light — cream ground, rich-black text.' },
+  { key: 'dark', label: 'Dark', title: 'Always dark — black ground, champagne accent.' },
+];
+
+function mountTheme() {
+  const T = window.TMOS_THEME;
+  const wrap = $('#themePick');
+  if (!wrap) return;
+  wrap.replaceChildren();
+  for (const opt of THEME_OPTIONS) {
+    const b = el('button', null, opt.label);
+    b.type = 'button';
+    b.dataset.theme = opt.key;
+    b.title = opt.title;
+    b.setAttribute('aria-pressed', 'false');
+    b.addEventListener('click', () => { if (T) T.set(opt.key, true); paintTheme(); });
+    wrap.appendChild(b);
+  }
+  paintTheme();
+  // `system` is a standing instruction, so the resolved theme can change with
+  // no click. The head script re-stamps <html>; this keeps the label honest.
+  try {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    if (mq.addEventListener) mq.addEventListener('change', paintTheme);
+  } catch { /* no matchMedia — the pill just never updates itself */ }
+}
+
+function paintTheme() {
+  const root = document.documentElement;
+  const pref = root.getAttribute('data-theme-pref') || 'system';
+  const now = root.getAttribute('data-theme') || 'light';
+  for (const b of document.querySelectorAll('#themePick button')) {
+    b.setAttribute('aria-pressed', String(b.dataset.theme === pref));
+  }
+  const wrap = $('#themePick');
+  if (wrap) {
+    wrap.setAttribute('aria-label',
+      'Theme — ' + pref + (pref === 'system' ? ' (' + now + ' right now)' : ''));
+  }
+}
+
+mountTheme();
 
 function bindBox(taInput, goBtn, modesId) {
   const ta = $(taInput);

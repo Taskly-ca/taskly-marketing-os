@@ -60,9 +60,54 @@
  *    unsourced text under a heading that looks derived, which is the whole
  *    class of thing `packages/research` exists to refuse.
  *
- * `dropped` spans are deliberately NOT here: they are attribution's refusals,
- * they arrive per-span while the answer is still being built, and the frame
- * they belong on is a per-span one rather than a summary at the end.
+ * `dropped` spans are deliberately NOT here: on the web path they are
+ * attribution's refusals, they arrive per-span while the answer is still being
+ * built, and the frame they belong on is a per-span one rather than a summary
+ * at the end.
+ *
+ * ── AND ONE MORE, FOR GROUNDED MODE: `unused` ──────────────────────────────
+ *
+ *   event: unused
+ *   data:  { dropped:      [{ span: string, why: string }],
+ *            expectations: [{ id, locator, title, claim, p, resolveAt }] }
+ *
+ * Emitted AT MOST ONCE per run, only by grounded mode, only when at least one
+ * of the two lists carries something — and, unlike `epilogue`, EARLY: right
+ * after the last `span` and before the first `delta`. Both lists are facts
+ * about the EVIDENCE, true the moment phase A finishes, so the reader gets the
+ * refusals beside the source strip while the prose is still arriving. That is
+ * the same argument §3 makes for sources landing before prose. `epilogue` is
+ * about the answer; this is about what the answer was allowed to rest on.
+ *
+ * A sibling rather than three more fields on `epilogue`, for the reason
+ * `epilogue` is itself a sibling of `done`: these arrive at a different moment
+ * and mean a different thing, and one frame carrying "what the run could not
+ * answer" next to "which of our own rows failed a check" is one frame with two
+ * jobs. A reader that does not know this event ignores the frame and loses
+ * nothing it had — which is what SSE does with an unregistered event type.
+ *
+ * THE TWO LISTS ARE SEPARATE BECAUSE THEY ARE SEPARATE THINGS, and a renderer
+ * that merges them undoes the one distinction grounded mode can only enforce at
+ * selection time — phase B is told every span is already proven and phase C's
+ * number check would happily confirm a figure that genuinely is in a ledger
+ * row, so both are blind to it:
+ *
+ *  - `dropped` — a record that COULD have been evidence and failed a check: a
+ *    fact stored with no snippet, a superseded finding, a draft Brain passage,
+ *    a passage too long to narrow to a citable span. §7 item 1 is that showing
+ *    these is the most honest thing this system does and the most tempting
+ *    thing to delete for a cleaner screen. The UI currently says "no drop stage
+ *    on a grounded run", which was true only while this frame did not exist.
+ *  - `expectations` — open rows from the prediction ledger. NOT refusals: a
+ *    forecast never entered the contest, because it is not an observation and
+ *    may never be cited. Shown so a reader can see what we expect, under a
+ *    heading that says so — and never under "Dropped".
+ *
+ * NOT PERSISTED, which is a real limitation rather than a decision: a reopened
+ * thread does not replay this frame. `message.answer` has exactly one `dropped`
+ * field and it holds Verified mode's refused CLAIMS; putting span-level
+ * refusals in it would file one kind of refusal under another kind's name,
+ * which is the re-labelling `answerPayloadFor` already refuses to do.
  */
 import type { ServerResponse } from 'node:http';
 import {
@@ -71,6 +116,7 @@ import {
   groundedSourceEvents,
   groundedSpanEvents,
   groundedUniverse,
+  planSearches,
   research,
   streamAnswer,
   streamGrounded,
@@ -102,6 +148,8 @@ import type {
   ConversationTurn,
   DeltaEvent,
   Dropped,
+  DroppedSpan,
+  Expectation,
   Point,
   ReadDoc,
   ReadPort,
@@ -148,6 +196,20 @@ export interface AnswerPorts {
   readonly read: ReadPort;
 }
 
+/**
+ * The `unused` frame — see the header for the wire shape, the timing, and why
+ * an expectation is not a refusal.
+ *
+ * Both fields are relayed exactly as `groundedUniverse` produced them. Nothing
+ * here re-words a refusal: `grounded.ts` writes the `why` on a dropped record
+ * and it is the sentence a reader acts on, so a second phrasing composed at the
+ * wire would be a second place for "a draft may not be cited" to be wrong.
+ */
+export interface UnusedEvent {
+  readonly dropped: readonly DroppedSpan[];
+  readonly expectations: readonly Expectation[];
+}
+
 export interface StreamAnswerDeps extends AnswerPorts {
   /**
    * The thread so far, oldest first — a follow-up is answered in context or it
@@ -171,6 +233,15 @@ export interface StreamAnswerDeps extends AnswerPorts {
   readonly onSpan: (e: SpanEvent) => void;
   readonly onDelta: (e: DeltaEvent) => void;
   readonly onSentence: (e: SentenceEvent) => void;
+  /**
+   * Phase A's refusals and the forecasts it is holding. Grounded mode calls it;
+   * the web pipeline does not, and is not being asked to — `StreamDeps` has no
+   * such field, so `streamAnswer` receives a dep it cannot see, exactly as it
+   * received `history` before `stream.ts` grew a matching one. A web run
+   * therefore emits no `unused` frame, and a UI must read "no frame" as "this
+   * mode does not report that", never as "nothing was refused".
+   */
+  readonly onUnused: (e: UnusedEvent) => void;
 }
 
 export interface StreamAnswerResult {
@@ -254,6 +325,8 @@ const STREAM_ANSWER: StreamAnswerFn = streamAnswer;
  * link outright is worse than answering it the default way.
  */
 type AnswerMode = 'web' | 'grounded' | 'verified';
+/** What `message.mode` stores. `web` is written `fast`; see `messageMode`. */
+type StoredMode = 'fast' | 'verified' | 'grounded';
 
 export function parseMode(raw: string | null | undefined): AnswerMode {
   const m = (raw ?? '').trim().toLowerCase();
@@ -261,18 +334,31 @@ export function parseMode(raw: string | null | undefined): AnswerMode {
 }
 
 /**
- * WHAT GOES IN `message.mode`, WHICH CANNOT SAY "GROUNDED".
+ * WHAT GOES IN `message.mode`, AND WHY IT STILL CANNOT SAY "GROUNDED".
  *
- * Migration 015 constrains the column to `('fast','verified')`, and migrations
- * are a locked, serial file this task may not touch. So a grounded turn is
- * stored as `fast` — which is true about the SHAPE of the answer (streamed
- * prose, per-sentence checks, no whole-answer gate) and silent about where its
- * evidence came from. That is a real gap, not a rounding: cost-per-mode and
- * "was this answered from our own ledger?" cannot be recovered from the row.
- * Widening the constraint is a one-line migration and a serial change.
+ * The column can. **Migration 016 widened it to `('fast','verified','grounded')`**
+ * — verified against the live database — so the schema half of this gap is
+ * closed and the two questions 015 built the column for ("was this answered
+ * from our own ledger?", "what does each mode cost?") are answerable of a row.
+ *
+ * The DECODER was the second half, and it is now closed too. `packages/adapters`
+ * reads this column through `asUnion`, which THROWS on an unlisted value — and
+ * `getThread` is both what renders a thread and what `historyFor` reads a
+ * follow-up's context from. So a row carrying 'grounded' would not have failed
+ * on the way in; it would have failed on every way out, making its own thread
+ * permanently unreadable. That is strictly worse than the mislabelling it was
+ * meant to fix, which is why the migration landed first and alone.
+ *
+ * ORDER, for whoever adds the next mode: widen the reader, ship it, THEN write
+ * the value. A schema that admits a mode nothing writes is inert; a writer that
+ * emits a mode nothing can read is a corrupted thread.
  */
-function messageMode(mode: AnswerMode): 'fast' | 'verified' {
-  return mode === 'verified' ? 'verified' : 'fast';
+function messageMode(mode: AnswerMode): StoredMode {
+  // The two vocabularies differ by one word and always have: the route calls it
+  // `web` because that is where it looked, the column calls it `fast` because
+  // that is how it answered. Mapping here rather than renaming either keeps a
+  // URL somebody kept working and a column 015 already constrained.
+  return mode === 'web' ? 'fast' : mode;
 }
 
 /* ── grounded mode: the seam ────────────────────────────────────────────── */
@@ -304,7 +390,19 @@ interface GroundedAnswerDeps {
   /** What the retrieval looked for and did not find. Not part of the universe,
    *  because "we hold no facts about this company" is a fact about the QUERY. */
   readonly excluded: readonly string[];
-  readonly history: readonly ConversationTurn[];
+  /**
+   * NO `history`, AND ITS ABSENCE IS THE ENFORCEMENT.
+   *
+   * It was here while grounded mode had no planner and nothing read it. Now
+   * that a follow-up IS resolved against the conversation (see
+   * `RESOLVE_FOLLOW_UP`), a field carrying prior turns into phase B's deps is
+   * one edit away from a prompt containing a previous answer — and that failure
+   * is invisible: a sentence copied out of an earlier answer, marked with a
+   * citation to a span retrieved this run, passes every per-sentence check and
+   * renders `confirmed`. The shape is the defence; the comment is the reminder.
+   * `stream.ts` makes the identical argument above its own generation call, and
+   * `GroundedStreamDeps` has no `history` field either.
+   */
   readonly onStatus: (e: StatusEvent) => void;
   readonly onDelta: (e: DeltaEvent) => void;
   readonly onSentence: (e: SentenceEvent) => void;
@@ -330,14 +428,89 @@ export type GroundedAnswerFn = (
  * given no search port and no read port, which is what makes "grounded mode
  * never reaches a search provider" structural rather than a rule to remember.
  *
- * The deps this route composes are a superset of what it takes — `excluded` and
- * `history` are read here and not there. `history` in particular goes no
- * further: grounded mode has no planner to resolve a follow-up against, so the
- * question reaches phase B as it was typed, and there is no prior prose
- * anywhere near the generator.
+ * The deps this route composes are a superset of what it takes — `excluded` is
+ * read here and not there. What is NOT in either shape is the conversation: the
+ * question that arrives has already been resolved against it, and no prior
+ * prose comes anywhere near the generator.
  */
 export const GROUNDED_ANSWER: GroundedAnswerFn = (question, deps) =>
   streamGrounded(question, deps.universe, deps);
+
+/* ── grounded mode: resolving a follow-up ───────────────────────────────── */
+
+/**
+ * What the run actually retrieves and answers against.
+ *
+ * `standalone` is the question with every reference resolved. It equals the
+ * question as typed on a first turn, and whenever the planner could not do
+ * better.
+ */
+export interface ResolvedQuestion {
+  readonly standalone: string;
+  readonly costCents: number;
+  /** Non-empty only when a follow-up could NOT be resolved and the run went
+   *  ahead against the literal words. Surfaced, never swallowed. */
+  readonly note: string;
+}
+
+export type ResolveFollowUpFn = (
+  question: string,
+  history: readonly ConversationTurn[],
+  ask: AskPort,
+) => Promise<ResolvedQuestion>;
+
+/**
+ * GROUNDED MODE GETS A PLANNER — AND ONLY THE ONE THING A PLANNER IS FOR.
+ *
+ * Retrieval here is deterministic term-and-entity matching over our own rows,
+ * so "and in Vancouver?" was matched against those four words and came back
+ * with nothing. That was a deliberate choice while the alternative was handing
+ * phase B a previous answer; it is not the only alternative. `planSearches`
+ * already resolves a follow-up into a STANDALONE QUESTION using the
+ * conversation, and a standalone question is a question — not evidence, not
+ * prose, and not something a sentence may rest on.
+ *
+ * WHAT CROSSES AND WHAT DOES NOT. History reaches this function and stops here.
+ * What leaves is one rewritten interrogative sentence, which then goes to
+ * retrieval and to phase B in place of the follow-up — exactly what the web
+ * path does with `plan.standalone`. What never leaves is the previous ANSWER:
+ * `GroundedAnswerDeps` has no `history` field to put it in and neither does
+ * `GroundedStreamDeps`, so the boundary holds by shape and not by memory. The
+ * residual risk is the one the web path also carries and `stream.ts` names: a
+ * planner could smuggle an earlier claim into the rewrite it returns. Phase C
+ * is the backstop there, and it is a backstop — which is why the structural
+ * rule about prose is kept absolute rather than traded against it.
+ *
+ * THREE THINGS FROM THE PLAN ARE DELIBERATELY DROPPED ON THE FLOOR:
+ *
+ *  - `queries` — grounded mode reaches no search provider. `maxQueries` is 0,
+ *    so the planner's queries are sliced away before they can tempt anything.
+ *  - `unanswerable` — the planner is asked what THE OPEN WEB cannot settle.
+ *    Relaying that into a grounded run's "Not answerable" card would answer a
+ *    question about our ledger with a statement about the web.
+ *  - `reuse` — it decides whether to re-fetch pages, and there are no pages.
+ *
+ * NO HISTORY, NO CALL. A first question is resolved by definition, and spending
+ * a planning call on it would put a model between the reader and the ledger for
+ * nothing — grounded mode costs a fifth of a web answer precisely because phase
+ * A is free, and a turn-one planner would be most of the remaining bill.
+ */
+export const RESOLVE_FOLLOW_UP: ResolveFollowUpFn = async (question, history, ask) => {
+  if (history.length === 0) return { standalone: question, costCents: 0, note: '' };
+
+  const plan = await planSearches(question, history, ask, 0);
+  return {
+    standalone: plan.standalone,
+    costCents: plan.costCents,
+    // A dead planning call degrades the run; it does not fail it. Retrieval
+    // against the literal follow-up usually returns little, and a reader
+    // looking at a thin answer is owed the reason it is thin.
+    note:
+      plan.note === ''
+        ? ''
+        : `this follow-up was not resolved against the conversation (${plan.note.trim()}), so our records were searched for the words as typed`,
+  };
+};
 
 /**
  * Grounded mode as a `StreamAnswerFn`, so the run body stays one call.
@@ -350,19 +523,44 @@ export const GROUNDED_ANSWER: GroundedAnswerFn = (question, deps) =>
 export function groundedRunner(
   retrieveEvidence: (question: string) => Promise<GroundedEvidence>,
   answer: GroundedAnswerFn,
+  resolve: ResolveFollowUpFn = RESOLVE_FOLLOW_UP,
 ): StreamAnswerFn {
   return async (question, deps) => {
-    // Never `searching`. The phase enum has one, and a grounded run announcing
-    // it would be claiming a search it did not do.
+    // The conversation is resolved BEFORE anything is retrieved, because the
+    // retrieval is the thing the follow-up was failing. `planning` and never
+    // `searching`: the phase enum has one, and a grounded run announcing it
+    // would be claiming a search it did not do.
+    if (deps.history.length > 0) {
+      deps.onStatus({ phase: 'planning', detail: 'resolving the follow-up against the conversation' });
+    }
+    const resolved = await resolve(question, deps.history, deps.ask);
+    // From here down, `asked` is the question. The follow-up as typed is not
+    // carried alongside it: `streamGrounded` composes its own QUESTION block
+    // and shows what it is given, so passing both would put the unresolved
+    // words in front of the writer for no gain.
+    const asked = resolved.standalone;
+
     deps.onStatus({ phase: 'reading', detail: 'the world model, findings, the Brain and the ledger' });
-    const evidence = await retrieveEvidence(question);
+    const evidence = await retrieveEvidence(asked);
 
     // Phase A. Free and synchronous: internal spans were proven the day they
     // were written, so there is no extraction pass to pay for.
     deps.onStatus({ phase: 'attributing', detail: `${evidence.records.length} internal record(s)` });
-    const universe = groundedUniverse(question, evidence.records);
+    const universe = groundedUniverse(asked, evidence.records);
     for (const source of groundedSourceEvents(universe)) deps.onSource(source);
     for (const span of groundedSpanEvents(universe)) deps.onSpan(span);
+
+    // Phase A's refusals, and the forecasts it may not quote. Emitted here —
+    // after the spans, before any prose, and before the empty-universe return
+    // below, where the dropped list is the entire explanation of why there is
+    // nothing to read. See the `unused` block in this file's header.
+    const unused = unusedFor(universe);
+    if (unused !== null) deps.onUnused(unused);
+
+    // Everything a run could not do is one list by the time it reaches the
+    // reader: what retrieval looked for and did not find, plus a follow-up that
+    // could not be resolved.
+    const excluded = [...evidence.excluded, ...(resolved.note === '' ? [] : [resolved.note])];
 
     if (universe.spans.length === 0) {
       // A legitimate outcome, and the honest one. Falling back to the web here
@@ -373,20 +571,22 @@ export function groundedRunner(
       // replaced with a line of this route's own.
       return {
         text: '',
-        costCents: 0,
+        // Phase A is free, so the planning call — when there was one — is the
+        // whole bill, and it is reported rather than rounded to the zero it
+        // would have been on a first question.
+        costCents: resolved.costCents,
         sources: groundedDocs(universe),
         queries: [],
         note: universe.note,
-        unanswered: [...evidence.excluded],
+        unanswered: excluded,
       };
     }
 
-    const result = await answer(question, {
+    const result = await answer(asked, {
       ask: deps.ask,
       askStream: deps.askStream,
       universe,
-      excluded: evidence.excluded,
-      history: deps.history,
+      excluded,
       onStatus: deps.onStatus,
       onDelta: deps.onDelta,
       onSentence: deps.onSentence,
@@ -394,11 +594,12 @@ export function groundedRunner(
 
     return {
       ...result,
+      costCents: result.costCents + resolved.costCents,
       // The retrieval record, so a thread reopened tomorrow still shows which
       // of our own rows it rested on. `queries` stays empty: none were run.
       sources: result.sources ?? groundedDocs(universe),
       queries: result.queries ?? [],
-      unanswered: [...(result.unanswered ?? []), ...evidence.excluded],
+      unanswered: [...(result.unanswered ?? []), ...excluded],
     };
   };
 }
@@ -771,6 +972,21 @@ export interface EpilogueEvent {
 const cleaned = (xs: readonly string[] | undefined): string[] =>
   (xs ?? []).map((x) => x.trim()).filter((x) => x !== '');
 
+/**
+ * The `unused` frame, or null when phase A refused nothing and holds no
+ * forecast.
+ *
+ * Null and not an empty frame, for `epilogueFor`'s reason: a run that dropped
+ * nothing and a run that does not report drops must not look alike on the wire,
+ * and the UI's card already distinguishes "nothing was dropped" from "not
+ * reported by this run". Sending `{dropped: [], expectations: []}` would answer
+ * that question with the wrong one of the two.
+ */
+export function unusedFor(universe: GroundedUniverse): UnusedEvent | null {
+  if (universe.dropped.length === 0 && universe.expectations.length === 0) return null;
+  return { dropped: [...universe.dropped], expectations: [...universe.expectations] };
+}
+
 export function epilogueFor(result: StreamAnswerResult): EpilogueEvent | null {
   const unanswered = cleaned(result.unanswered);
   const note = (result.note ?? '').trim();
@@ -945,6 +1161,9 @@ export async function runAnswerStream(
       if (e.verdict === 'flagged') flagged += 1;
       send(sink, 'sentence', e);
     },
+    // Straight to the wire and nowhere else: `message.answer` has no field
+    // these belong in, so this frame is live-only and the header says so.
+    onUnused: (e: UnusedEvent) => send(sink, 'unused', e),
   };
 
   try {
@@ -999,7 +1218,6 @@ export async function runAnswerStream(
       // own note says WHY it is empty, so it is preferred over a generic line;
       // naming it either way beats aborting the turn and losing the question.
       body: bodyFor(result),
-      // `grounded` collapses to `fast` here — see `messageMode`.
       mode: messageMode(mode),
       runId: deps.runId,
       costCents: result.costCents,
@@ -1105,11 +1323,14 @@ export async function runAnswer(
       store: PG_STORE,
       guard: GUARD,
       streamAnswer: STREAM_ANSWER,
-      // Retrieval is real and runs today; `GROUNDED_ANSWER` is the open seam
-      // and refuses rather than writing prose it cannot cite.
+      // Retrieval, generation, and — third — the resolution of a follow-up
+      // into a standalone question, which is what the retrieval is run against.
+      // Named here rather than left to the default so that the one place
+      // history is allowed to matter is visible at the wiring.
       groundedAnswer: groundedRunner(
         (q) => retrieveGrounded(q, createPostgresGroundedReader()),
         GROUNDED_ANSWER,
+        RESOLVE_FOLLOW_UP,
       ),
       verifiedAnswer: VERIFIED_ANSWER,
       ports: {

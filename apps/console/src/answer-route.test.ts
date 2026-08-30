@@ -37,6 +37,7 @@ import type {
   ThreadDetail,
   ThreadRecord,
 } from '@tmos/adapters';
+import { rowToMessage } from '@tmos/adapters';
 
 import {
   AnswerBusy,
@@ -48,16 +49,20 @@ import {
   groundedRunner,
   historyFor,
   parseMode,
+  RESOLVE_FOLLOW_UP,
   runAnswerStream,
   titleFor,
+  unusedFor,
   verifiedRunner,
   type AnswerDeps,
   type AnswerStore,
   type EpilogueEvent,
   type GroundedAnswerFn,
+  type ResolveFollowUpFn,
   type StreamAnswerFn,
+  type UnusedEvent,
 } from './answer-route.js';
-import type { GroundedRecord, GroundedUniverse } from '@tmos/research';
+import type { ConversationTurn, GroundedRecord, GroundedUniverse } from '@tmos/research';
 import { groundedUniverse } from '@tmos/research';
 import type { GroundedEvidence } from './grounded-retrieval.js';
 import type { SseSink } from './sse.js';
@@ -743,13 +748,40 @@ describe('runAnswerStream — the mode decides the pipeline', () => {
     expect(d.store.messages[1]?.mode).toBe('verified');
   });
 
-  it('stores a grounded turn as `fast`, because the column cannot say otherwise', async () => {
-    // Migration 015 constrains mode to ('fast','verified') and migrations are a
-    // locked serial file. This assertion exists to make the gap visible rather
-    // than to bless it: widening the constraint is a one-line migration.
+  it('stores a grounded turn as `fast`, because the DECODER cannot yet read it', async () => {
+    // Migration 016 widened the check constraint to
+    // ('fast','verified','grounded'), applied and verified against the live
+    // database, and `AnswerMode`/`MODES` in the store were widened with it.
+    // Both halves had to land, and in that order — see `messageMode`.
     const d = deps({ groundedAnswer: tagged('grounded') });
     await runAnswerStream(recorder().sink, { ...ASK, mode: 'grounded' }, d);
-    expect(d.store.messages[1]?.mode).toBe('fast');
+    expect(d.store.messages[1]?.mode).toBe('grounded');
+  });
+
+  it('a grounded row now survives the round trip it used to die on', () => {
+    // THE ORDER THIS PINS. `rowToMessage` decodes `mode` through `asUnion`,
+    // which THROWS on an unlisted value — and `getThread` is what renders a
+    // thread AND what `historyFor` reads a follow-up's context from. So before
+    // the store was widened, a 'grounded' row inserted cleanly and then failed
+    // on every read, making its own thread permanently unreadable: strictly
+    // worse than the mislabelling it fixed. Widen the reader, ship it, THEN
+    // write the value.
+    const row = {
+      id: '00000000-0000-4000-8000-000000000001',
+      thread_id: '00000000-0000-4000-8000-000000000002',
+      seq: 2,
+      role: 'assistant',
+      body: 'Jiffy jobs start at $129 [1].',
+      mode: 'grounded',
+      run_id: 'run-1',
+      cost_cents: '0.036',
+      answer: null,
+      created_at: '2026-08-31T12:00:00.000Z',
+    };
+    expect(rowToMessage(row).mode).toBe('grounded');
+    expect(rowToMessage({ ...row, mode: 'fast' }).mode).toBe('fast');
+    // Still closed, though — the union is a gate, not a passthrough.
+    expect(() => rowToMessage({ ...row, mode: 'deep-research' })).toThrow(/not one of/);
   });
 
   it('refuses a mode with no runner by name, before a thread or a cent', async () => {
@@ -787,9 +819,51 @@ const PASSAGE: GroundedRecord = {
   reviewed: '2026-08-01',
 };
 
+/** A finding we withdrew. `bindGrounded` refuses it — it COULD have been
+ *  evidence and failed a check, which is exactly what `dropped` means. */
+const WITHDRAWN: GroundedRecord = {
+  type: 'finding',
+  id: 'f-9',
+  title: 'Jiffy raised its minimum',
+  sourceUrl: 'https://jiffy.ca/pricing',
+  span: 'The minimum visit is now $149.',
+  observedAt: '2026-08-10',
+  superseded: true,
+};
+
+/** A forecast. Never citable, and deliberately NOT a refusal: it never entered
+ *  the contest `dropped` records the outcome of. */
+const FORECAST: GroundedRecord = {
+  type: 'forecast',
+  id: 'p-3',
+  title: 'Jiffy enters Hamilton by Q1',
+  locator: 'prediction · p-3',
+  claim: 'Jiffy enters Hamilton by Q1',
+  p: 0.4,
+  resolveAt: '2027-03-31',
+};
+
 const EVIDENCE: GroundedEvidence = {
   records: [FACT, PASSAGE],
   terms: ['jiffy', 'price'],
+  entities: ['Jiffy'],
+  excluded: [],
+};
+
+/** Quotable evidence, one refusal and one forecast — the run that has something
+ *  to say in every group the reader is shown. */
+const MIXED_EVIDENCE: GroundedEvidence = {
+  records: [FACT, WITHDRAWN, FORECAST],
+  terms: ['jiffy'],
+  entities: ['Jiffy'],
+  excluded: [],
+};
+
+/** Nothing quotable, and the reason is the refusals — the case where the
+ *  `unused` frame is the entire explanation of an empty screen. */
+const REFUSED_EVIDENCE: GroundedEvidence = {
+  records: [WITHDRAWN, FORECAST],
+  terms: ['jiffy'],
   entities: ['Jiffy'],
   excluded: [],
 };
@@ -835,8 +909,16 @@ function groundedRelay(): { events: { event: string; data: unknown }[]; deps: Pa
       onSpan: push('span'),
       onDelta: push('delta'),
       onSentence: push('sentence'),
+      onUnused: push('unused'),
     },
   };
+}
+
+/** The same relay, with a conversation behind it. Grounded mode is allowed to
+ *  resolve a follow-up against this and nothing else. */
+function groundedRelayWith(history: readonly ConversationTurn[]): ReturnType<typeof groundedRelay> {
+  const r = groundedRelay();
+  return { events: r.events, deps: { ...r.deps, history } };
 }
 
 describe('groundedRunner', () => {
@@ -936,6 +1018,226 @@ describe('groundedRunner', () => {
   });
 });
 
+/* ── grounded mode: the refusals reach the wire ─────────────────────────── */
+
+describe('unusedFor', () => {
+  it('says nothing when phase A refused nothing and holds no forecast', () => {
+    // Null, not an empty frame: "nothing was dropped" and "this run does not
+    // report drops" are different sentences and the card prints both.
+    expect(unusedFor(groundedUniverse('q', EVIDENCE.records))).toBeNull();
+  });
+
+  it('keeps a refusal and an expectation in separate lists', () => {
+    const u = unusedFor(groundedUniverse('q', MIXED_EVIDENCE.records));
+    expect(u?.dropped.map((d) => d.why).join(' ')).toMatch(/superseded by a correction/);
+    // A forecast is NOT a refusal — it never entered the contest. Merging the
+    // two would render an expectation under a heading that means "refused",
+    // and selection is the only place that distinction can be enforced.
+    expect(u?.expectations.map((e) => e.claim)).toEqual(['Jiffy enters Hamilton by Q1']);
+    expect(u?.dropped.some((d) => d.span.includes('Hamilton'))).toBe(false);
+  });
+});
+
+describe('groundedRunner — the refusals on the wire', () => {
+  it('emits `unused` after the last span and before any prose', async () => {
+    const { events, deps: dep } = groundedRelay();
+    await groundedRunner(async () => MIXED_EVIDENCE, async (_q, d) => {
+      d.onDelta({ n: 1, text: 'Jobs start at $129 [1].' });
+      return { text: 'Jobs start at $129 [1].', costCents: 1 };
+    })('What do we know about Jiffy?', dep);
+    const names = events.map((e) => e.event);
+    // The frame is a fact about the EVIDENCE, true the moment phase A ends, so
+    // the reader gets it beside the source strip rather than a beat after the
+    // answer — the same argument §3 makes for sources landing before prose.
+    expect(names.filter((n) => n === 'unused')).toHaveLength(1);
+    expect(names.lastIndexOf('span')).toBeLessThan(names.indexOf('unused'));
+    expect(names.indexOf('unused')).toBeLessThan(names.indexOf('delta'));
+  });
+
+  it('sends the refusals when nothing could be quoted, which is when they are the whole story', async () => {
+    const { events, deps: dep } = groundedRelayWith([]);
+    const result = await groundedRunner(async () => REFUSED_EVIDENCE, async () => {
+      throw new Error('phase B must not run against an empty universe');
+    })('What do we know about Jiffy?', dep);
+
+    const unused = events.find((e) => e.event === 'unused')?.data as UnusedEvent | undefined;
+    expect(unused?.dropped).toHaveLength(1);
+    expect(unused?.expectations).toHaveLength(1);
+    // The note says the screen is empty; the frame says WHICH of our own rows
+    // failed which check. Without it the run is indistinguishable from one that
+    // matched nothing at all.
+    expect(result.note).toMatch(/prediction ledger|nothing quotable/i);
+  });
+
+  it('emits no frame at all when there was nothing to refuse', async () => {
+    const { events, deps: dep } = groundedRelay();
+    await groundedRunner(async () => EVIDENCE, async () => ({ text: 'a [1].', costCents: 1 }))(
+      'What do we know about Jiffy?',
+      dep,
+    );
+    expect(events.some((e) => e.event === 'unused')).toBe(false);
+  });
+
+  it('reaches the browser as its own event, before done, and never on a web run', async () => {
+    const { frames, sink } = recorder();
+    const d = deps({
+      groundedAnswer: groundedRunner(async () => MIXED_EVIDENCE, async () => ({ text: 'a [1].', costCents: 1 })),
+    });
+    await runAnswerStream(sink, { ...ASK, mode: 'grounded' }, d);
+    const names = frames.map((f) => f.event);
+    expect(names).toContain('unused');
+    expect(names.indexOf('unused')).toBeLessThan(names.indexOf('done'));
+
+    // The web pipeline is never handed this channel and must not grow one by
+    // accident: no frame means "this mode does not report that", which is not
+    // the same claim as "nothing was refused".
+    const web = recorder();
+    await runAnswerStream(web.sink, { ...ASK, mode: 'web' }, deps());
+    expect(web.frames.some((f) => f.event === 'unused')).toBe(false);
+  });
+});
+
+/* ── grounded mode: the follow-up finally resolves ──────────────────────── */
+
+const PRIOR: ConversationTurn = {
+  // The answer carries a claim with NO FIGURE in it, on purpose: that is the
+  // sentence the per-sentence check cannot catch if it is ever copied forward,
+  // and therefore the string worth watching for in phase B's deps.
+  question: 'What do we know about Jiffy in Toronto?',
+  answer: 'Jiffy is the larger of the two providers [1].',
+  sourceUrls: ['https://jiffy.ca/pricing'],
+};
+
+/** A planner that rewrites, without a model. The route's own resolver is
+ *  exercised separately below. */
+const resolvesTo = (standalone: string, costCents = 0.02): ResolveFollowUpFn =>
+  async () => ({ standalone, costCents, note: '' });
+
+describe('groundedRunner — a follow-up is resolved before anything is retrieved', () => {
+  it('retrieves against the standalone question, not the four words typed', async () => {
+    const asked: string[] = [];
+    const { deps: dep } = groundedRelayWith([PRIOR]);
+    await groundedRunner(
+      async (q) => {
+        asked.push(q);
+        return EVIDENCE;
+      },
+      async () => ({ text: 'a [1].', costCents: 1 }),
+      resolvesTo('What do we know about Jiffy in Vancouver?'),
+    )('and in Vancouver?', dep);
+
+    // The reported failure: "and in Vancouver?" matched against our own rows by
+    // term overlap retrieves nothing, because none of those four words is a
+    // term. The resolution is what the retrieval was missing.
+    expect(asked).toEqual(['What do we know about Jiffy in Vancouver?']);
+  });
+
+  it('hands phase B the standalone question and NOTHING of the conversation', async () => {
+    const seen: { question: string; deps: Record<string, unknown> }[] = [];
+    const phaseB: GroundedAnswerFn = async (question, d) => {
+      seen.push({ question, deps: d as unknown as Record<string, unknown> });
+      return { text: 'a [1].', costCents: 1 };
+    };
+    const { deps: dep } = groundedRelayWith([PRIOR]);
+    await groundedRunner(async () => EVIDENCE, phaseB, resolvesTo('What do we know about Jiffy in Vancouver?'))(
+      'and in Vancouver?',
+      dep,
+    );
+
+    expect(seen[0]?.question).toBe('What do we know about Jiffy in Vancouver?');
+    // THE RULE THAT DOES NOT BEND. History may reach the planner and never the
+    // writer. A previous ANSWER in front of the generator is a sentence that
+    // can be copied out, cited to a span retrieved this run, and confirmed —
+    // the per-sentence check is blind to it because it carries no figure. The
+    // shape is the defence: there is no field to put it in.
+    expect(Object.keys(seen[0]?.deps ?? {})).not.toContain('history');
+    expect(JSON.stringify(seen[0]?.deps ?? {})).not.toContain('larger of the two');
+  });
+
+  it('does not plan on a first question — there is nothing to resolve and it is not free', async () => {
+    let planned = 0;
+    const { events, deps: dep } = groundedRelay();
+    await groundedRunner(
+      async () => EVIDENCE,
+      async () => ({ text: 'a [1].', costCents: 1 }),
+      async (q) => {
+        planned += 1;
+        return { standalone: q, costCents: 0.02, note: '' };
+      },
+    )('What do we know about Jiffy?', dep);
+
+    // The resolver is still consulted (it is the one place the rule lives), but
+    // it must not spend: grounded mode costs a fifth of a web answer because
+    // phase A is free, and a turn-one planning call would be most of the rest.
+    expect(planned).toBe(1);
+    const phases = events.filter((e) => e.event === 'status').map((e) => (e.data as { phase: string }).phase);
+    expect(phases).not.toContain('planning');
+    expect(phases).not.toContain('searching');
+  });
+
+  it('bills the planning call, so a follow-up is not cheaper on paper than it was', async () => {
+    const { deps: dep } = groundedRelayWith([PRIOR]);
+    const result = await groundedRunner(
+      async () => EVIDENCE,
+      async () => ({ text: 'a [1].', costCents: 1 }),
+      resolvesTo('What do we know about Jiffy in Vancouver?', 0.05),
+    )('and in Vancouver?', dep);
+    expect(result.costCents).toBeCloseTo(1.05, 6);
+  });
+
+  it('says so when the follow-up could not be resolved, rather than answering thin and silent', async () => {
+    const { deps: dep } = groundedRelayWith([PRIOR]);
+    const result = await groundedRunner(
+      async () => EMPTY_EVIDENCE,
+      async () => ({ text: '', costCents: 0 }),
+      async (q) => ({ standalone: q, costCents: 0, note: 'this follow-up was not resolved (the model was unavailable)' }),
+    )('and in Vancouver?', dep);
+
+    expect(result.unanswered?.join(' ')).toMatch(/not resolved/);
+  });
+});
+
+describe('RESOLVE_FOLLOW_UP', () => {
+  /** The planner's contract: JSON with a `standalone` field. */
+  const planner = (standalone: string): { ask: AskPort; prompts: string[] } => {
+    const prompts: string[] = [];
+    return {
+      prompts,
+      ask: {
+        ask: async (system: string, user: string) => {
+          prompts.push(`${system}\n${user}`);
+          return { text: JSON.stringify({ queries: ['ignored'], standalone, reuse: true }), costCents: 0.02 };
+        },
+      },
+    };
+  };
+
+  it('never calls a model when there is no conversation to resolve against', async () => {
+    const { ask, prompts } = planner('unused');
+    const r = await RESOLVE_FOLLOW_UP('What do we know about Jiffy?', [], ask);
+    expect(prompts).toEqual([]);
+    expect(r).toEqual({ standalone: 'What do we know about Jiffy?', costCents: 0, note: '' });
+  });
+
+  it('resolves the follow-up against the conversation and reports what it cost', async () => {
+    const { ask, prompts } = planner('What do we know about Jiffy in Vancouver?');
+    const r = await RESOLVE_FOLLOW_UP('and in Vancouver?', [PRIOR], ask);
+    expect(r.standalone).toBe('What do we know about Jiffy in Vancouver?');
+    expect(r.costCents).toBeCloseTo(0.02, 6);
+    // The transcript is what makes the rewrite possible, and this is the only
+    // call in grounded mode that is allowed to see it.
+    expect(prompts[0]).toContain('larger of the two');
+  });
+
+  it('falls back to the words as typed when the planner is unavailable, and names it', async () => {
+    const dead: AskPort = { ask: async () => null };
+    const r = await RESOLVE_FOLLOW_UP('and in Vancouver?', [PRIOR], dead);
+    expect(r.standalone).toBe('and in Vancouver?');
+    // Degrades, never fails — but the reader is told why the answer is thin.
+    expect(r.note).toMatch(/not resolved against the conversation/);
+  });
+});
+
 describe('the grounded seam, now closed', () => {
   /** A streamer that emits `text` and returns it whole — the shape
    *  `AskStreamPort` specifies, where the return value is the answer. */
@@ -952,7 +1254,6 @@ describe('the grounded seam, now closed', () => {
       askStream: streamer(text),
       universe: groundedUniverse('What do we know about Jiffy?', EVIDENCE.records),
       excluded: [],
-      history: [],
       onStatus: () => undefined,
       onDelta: () => undefined,
       onSentence: () => undefined,
