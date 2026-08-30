@@ -99,3 +99,28 @@ export interface AskResult {
 export interface AskPort {
   ask(system: string, user: string, maxTokens: number): Promise<AskResult | null>;
 }
+
+/**
+ * The same door, held open.
+ *
+ * Deliberately a SEPARATE interface rather than an optional method on
+ * `AskPort`: `packages/draft/src/types.ts` declares its own structurally
+ * identical copy of `AskPort`, so widening this one silently makes every
+ * `AskPort` implementation in the repo — including draft's — wrong at once,
+ * and TypeScript reports it at the implementations rather than here. Two
+ * narrow ports cost one extra name; one wide port costs two packages.
+ *
+ * `onDelta` receives the answer as it is written. It is a SIDE CHANNEL for
+ * display only — the returned `AskResult.text` is still the whole answer and is
+ * still what anything downstream parses or verifies. Nothing that reaches a
+ * reader as a claim may be assembled from the deltas alone: the stream can die
+ * halfway and a half-answer reads exactly like a whole one.
+ */
+export interface AskStreamPort {
+  askStream(
+    system: string,
+    user: string,
+    maxTokens: number,
+    onDelta: (text: string) => void,
+  ): Promise<AskResult | null>;
+}
