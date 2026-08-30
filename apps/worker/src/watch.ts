@@ -198,6 +198,38 @@ function catalogueWriter(company: string, reading: SitemapReading): ClaimWriter 
   };
 }
 
+/**
+ * WHAT THIS RUN CAN PROVE IT FETCHED — the ledger L0 checks a citation against.
+ *
+ * L0 refuses a claim citing a URL the run never retrieved, and that check is
+ * what makes a fabricated source impossible. It was being handed `[t.url]`:
+ * the page, unconditionally, whether or not the page read, and never the
+ * sitemap. So the one instrument here with no model in it produced exactly the
+ * output it was built for and could not ship it —
+ *
+ *   ✗ refuted at l0: cited a URL that was never retrieved this run:
+ *     https://jiffyondemand.com/sitemap.xml
+ *
+ * — about a document fetched through the same transport and the same robots
+ * gate one call earlier. A gate that refuses a document we actually read
+ * teaches an operator that its refusals are noise, which is how a fabrication
+ * check dies.
+ *
+ * Built from what came back rather than from what was configured, so it is
+ * STRICTER than the line it replaces as well as wider: a page that failed to
+ * read is not in it, and nothing may cite it.
+ */
+export function retrievalLedger(input: {
+  readonly pageUrl: string;
+  readonly pageRead: boolean;
+  readonly sitemapUrl: string | null;
+}): string[] {
+  const urls: string[] = [];
+  if (input.pageRead) urls.push(input.pageUrl);
+  if (input.sitemapUrl !== null) urls.push(input.sitemapUrl);
+  return urls;
+}
+
 /** The sitemap, or null when it cannot be read. Never throws a run down. */
 async function readSitemapFor(
   transport: ReturnType<typeof createTransport>,
@@ -440,12 +472,15 @@ export async function watchCompetitors(
      * no assembling.
      */
     const readings: Reading[] = [];
+    /** Set only once a sitemap has actually come back; see `retrievalLedger`. */
+    let sitemapUrl: string | null = null;
 
     if (t.sitemap) {
       const reading = await readSitemapFor(transport, t.sitemap, now);
       if (reading === null) {
         console.log('  sitemap unreadable — nothing recorded from it');
       } else {
+        sitemapUrl = reading.sourceUrl;
         readings.push(
           // The count is recorded and never published: no span contains it, and
           // no rewording of the claim can change that.
@@ -474,6 +509,7 @@ export async function watchCompetitors(
 
     if (readings.length === 0) continue;
 
+    const retrievedUrls = retrievalLedger({ pageUrl: t.url, pageRead: page !== null, sitemapUrl });
     const entityId = await ensureEntity(t.company, t.domain);
 
     for (const a of readings) {
@@ -586,7 +622,7 @@ export async function watchCompetitors(
               evidence: judged.finding.evidence,
               generated_by: judged.finding.generated_by,
             },
-            { verifier, retrievedUrls: [t.url], facts },
+            { verifier, retrievedUrls, facts },
           );
 
           if (!passesVerification(check)) {
