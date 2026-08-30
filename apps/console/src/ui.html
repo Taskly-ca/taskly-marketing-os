@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TMOS Console</title>
+<style>
+  :root{
+    --ground:#f5f7f8; --surface:#ffffff; --line:#dfe4e7;
+    --ink:#14181b; --muted:#69737b; --faint:#98a2a9;
+    --brass:#8d6a12; --hold:#2c6b50; --moved:#a04d1a;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --radius:14px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#0e1114; --surface:#161a1e; --line:#272d33;
+      --ink:#e7ebee; --muted:#939da5; --faint:#6c767e;
+      --brass:#cba347; --hold:#5aa886; --moved:#d17b45;
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+       font-size:14.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  .eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;
+           text-transform:uppercase;color:var(--faint)}
+  h1,h2,h3{font-weight:600;margin:0}
+  a{color:inherit}
+
+  /* ── shell ───────────────────────────────────────────────────────────── */
+  .app{display:flex;flex-direction:column;height:100vh}
+  header.bar{display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+             padding:14px 22px;background:var(--surface);border-bottom:1px solid var(--line)}
+  .brand{display:flex;flex-direction:column;gap:1px;margin-right:4px}
+  .brand h1{font-size:15px;letter-spacing:-.01em}
+  .chips{display:flex;gap:16px;flex-wrap:wrap;margin-left:auto;align-items:center}
+  .chip{display:flex;flex-direction:column;line-height:1.2}
+  .chip b{font-weight:600;font-size:15px;font-variant-numeric:tabular-nums}
+  .chip span{font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;
+             text-transform:uppercase;color:var(--faint)}
+
+  /* ── controls ────────────────────────────────────────────────────────── */
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+            padding:12px 22px;background:var(--surface);border-bottom:1px solid var(--line)}
+  button{font:inherit;font-size:13px;padding:7px 14px;border-radius:999px;
+         border:1px solid var(--line);background:var(--surface);color:var(--ink);
+         cursor:pointer;transition:background .14s ease,border-color .14s ease,transform .06s ease}
+  button:hover:not(:disabled){background:var(--ground);border-color:var(--faint)}
+  button:active:not(:disabled){transform:translateY(1px)}
+  button:disabled{opacity:.42;cursor:not-allowed}
+  button.primary{background:var(--brass);border-color:var(--brass);color:#fff}
+  button.primary:hover:not(:disabled){background:var(--brass);filter:brightness(1.08)}
+  button.danger{color:var(--moved);border-color:var(--moved)}
+  .spacer{flex:1}
+  label.free{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);cursor:pointer}
+
+  /* ── run console ─────────────────────────────────────────────────────── */
+  .runwrap{background:#0e1114;border-bottom:1px solid var(--line);
+           display:none;flex-direction:column;min-height:0}
+  .runwrap.open{display:flex}
+  .runhead{display:flex;align-items:center;gap:12px;padding:8px 22px;
+           border-bottom:1px solid #272d33;color:#939da5;font-family:var(--mono);font-size:11px}
+  .dot{width:7px;height:7px;border-radius:50%;background:#5aa886}
+  .dot.live{background:#cba347;animation:pulse 1.1s ease-in-out infinite}
+  .dot.dead{background:#d17b45}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  pre.log{margin:0;padding:14px 22px 20px;overflow:auto;max-height:38vh;
+          font-family:var(--mono);font-size:11.5px;line-height:1.5;color:#c7cfd5;
+          white-space:pre-wrap;word-break:break-word}
+  pre.log .ok{color:#5aa886}
+  pre.log .bad{color:#d17b45}
+  pre.log .hd{color:#cba347}
+
+  /* ── tabs + body ─────────────────────────────────────────────────────── */
+  nav.tabs{display:flex;gap:2px;padding:0 22px;background:var(--surface);
+           border-bottom:1px solid var(--line);overflow-x:auto}
+  nav.tabs button{border:0;border-radius:0;background:none;padding:11px 14px;
+                  font-size:13px;color:var(--muted);border-bottom:2px solid transparent}
+  nav.tabs button:hover{background:none;color:var(--ink)}
+  nav.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--brass)}
+  nav.tabs .n{font-family:var(--mono);font-size:10px;color:var(--faint);margin-left:5px}
+  main{flex:1;overflow:auto;padding:22px}
+  .panel{display:none;max-width:1080px;margin:0 auto}
+  .panel.on{display:block}
+  .lead{color:var(--muted);margin:0 0 18px;max-width:64ch}
+
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+        padding:16px 18px;margin-bottom:12px}
+  .card h3{font-size:14.5px;margin-bottom:2px}
+  .meta{font-family:var(--mono);font-size:10.5px;color:var(--faint);
+        letter-spacing:.06em;display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}
+  .sowhat{color:var(--muted);margin-top:6px}
+  .span{margin-top:10px;padding:9px 12px;background:var(--ground);border-radius:9px;
+        border-left:2px solid var(--line);font-family:var(--mono);font-size:11px;
+        color:var(--muted);word-break:break-word}
+  .withdrawn h3{text-decoration:line-through;color:var(--faint)}
+  .withdrawn{border-color:var(--moved)}
+  .tag{display:inline-block;font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;
+       text-transform:uppercase;padding:2px 7px;border-radius:999px;
+       border:1px solid var(--line);color:var(--muted)}
+  .tag.moved{color:var(--moved);border-color:var(--moved)}
+
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;
+     text-transform:uppercase;color:var(--faint);font-weight:400;
+     padding:0 10px 7px 0;border-bottom:1px solid var(--line)}
+  td{padding:9px 10px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  td.v{font-family:var(--mono);font-size:11.5px}
+  .scroll{overflow-x:auto}
+
+  .empty{color:var(--faint);padding:26px 0;text-align:center}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:760px){.split{grid-template-columns:1fr}}
+  input[type=text],input[type=number],textarea,select{
+    font:inherit;font-size:13px;padding:8px 11px;border-radius:9px;width:100%;
+    border:1px solid var(--line);background:var(--ground);color:var(--ink)}
+  textarea{resize:vertical;min-height:62px}
+  .field{margin-bottom:10px}
+  .field label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;
+               text-transform:uppercase;color:var(--faint);margin-bottom:5px}
+  .hint{color:var(--muted);font-size:12px;margin-top:6px}
+  .err{color:var(--moved);font-size:12.5px;margin-top:8px}
+  .okmsg{color:var(--hold);font-size:12.5px;margin-top:8px}
+  .p{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .hidden{display:none!important}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="bar">
+    <div class="brand">
+      <div class="eyebrow">Taskly marketing OS</div>
+      <h1>Competitor intelligence console</h1>
+    </div>
+    <div class="chips" id="chips"></div>
+  </header>
+
+  <div class="controls">
+    <button class="primary" data-run="all">Run full pass</button>
+    <button data-run="watch">Watch competitors</button>
+    <button data-run="collect">Collect</button>
+    <button data-run="reason">Reason</button>
+    <button data-run="briefing">Rebuild briefing</button>
+    <label class="free"><input type="checkbox" id="free"> free only (no model spend)</label>
+    <div class="spacer"></div>
+    <button id="stop" class="danger hidden">Stop</button>
+    <button id="toggleLog">Show log</button>
+    <button id="refresh">Refresh</button>
+  </div>
+
+  <div class="runwrap" id="runwrap">
+    <div class="runhead">
+      <span class="dot" id="dot"></span>
+      <span id="runlabel">idle</span>
+      <div class="spacer"></div>
+      <span id="runtime"></span>
+    </div>
+    <pre class="log" id="log"></pre>
+  </div>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="findings" aria-selected="true">What changed <span class="n" id="n-findings"></span></button>
+    <button data-tab="competitors" aria-selected="false">Competitors <span class="n" id="n-facts"></span></button>
+    <button data-tab="forecasts" aria-selected="false">Forecasts <span class="n" id="n-preds"></span></button>
+    <button data-tab="sources" aria-selected="false">Sources <span class="n" id="n-sources"></span></button>
+  </nav>
+
+  <main>
+    <section class="panel on" data-panel="findings">
+      <p class="lead">A change on a competitor's own page, verified by a second model before
+      it was allowed to appear. Withdrawn findings stay here, struck through, with the reason —
+      a record that hides its own mistakes is not a record.</p>
+      <div id="findings"></div>
+    </section>
+
+    <section class="panel" data-panel="competitors">
+      <p class="lead">What each competitor's own pages said, and when it changed. Every value
+      carries the sentence it came from. This is the part that compounds: a day not run is a
+      day of history that cannot be recovered.</p>
+      <div id="competitors"></div>
+    </section>
+
+    <section class="panel" data-panel="forecasts">
+      <p class="lead">Open forecasts about the observable world — they resolve against competitor
+      pages and job posts, so the track record builds with zero users. Your probability and the
+      agent's are scored separately.</p>
+      <div class="card">
+        <h3>Write your forecast</h3>
+        <p class="hint" id="fcHint">Loading questions…</p>
+        <div class="field"><label for="fcKey">Question</label>
+          <select id="fcKey"></select></div>
+        <div class="field"><label for="fcP">Your probability (0.01 – 0.99)</label>
+          <input type="text" id="fcP" placeholder="0.6" autocomplete="off"></div>
+        <div class="field"><label for="fcWhy">Why — frozen at write time, cannot be edited later</label>
+          <textarea id="fcWhy" placeholder="What makes you think that?"></textarea></div>
+        <button class="primary" id="fcSave">Record forecast</button>
+        <div id="fcMsg"></div>
+      </div>
+      <div id="forecasts"></div>
+    </section>
+
+    <section class="panel" data-panel="sources">
+      <p class="lead">Where signals come from. A source failing for days is usually robots.txt
+      and usually permanent — the gate is fail-closed by design.</p>
+      <div id="sources"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+let STATE = null;
+let es = null;
+let runStart = 0;
+let ticker = null;
+
+/* ── tabs ──────────────────────────────────────────────────────────────── */
+$('#tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-tab]');
+  if (!b) return;
+  for (const x of document.querySelectorAll('#tabs button')) x.setAttribute('aria-selected', String(x === b));
+  for (const p of document.querySelectorAll('.panel')) p.classList.toggle('on', p.dataset.panel === b.dataset.tab);
+});
+
+/* ── running a pass ────────────────────────────────────────────────────── */
+function setRunning(on, label) {
+  $('#stop').classList.toggle('hidden', !on);
+  for (const b of document.querySelectorAll('[data-run]')) b.disabled = on;
+  $('#dot').className = 'dot' + (on ? ' live' : '');
+  $('#runlabel').textContent = label;
+  if (on) {
+    runStart = Date.now();
+    clearInterval(ticker);
+    ticker = setInterval(() => {
+      $('#runtime').textContent = ((Date.now() - runStart) / 1000).toFixed(0) + 's';
+    }, 200);
+  } else {
+    clearInterval(ticker);
+  }
+}
+
+function logLine(line) {
+  const pre = $('#log');
+  const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  const span = document.createElement('span');
+  // Colour only the three things worth spotting at a glance. Anything more and
+  // the log becomes decoration rather than something you read.
+  let cls = '';
+  if (/^\s*(ok|✓|=|collected|synced)/.test(line) || /all green/.test(line)) cls = 'ok';
+  else if (/FAILED|failed|✗|refused|blocked|error/i.test(line)) cls = 'bad';
+  else if (/^[▶━]|^PASS SUMMARY/.test(line)) cls = 'hd';
+  span.className = cls;
+  span.textContent = line + '\n';
+  pre.appendChild(span);
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
+}
+
+function attach(stage) {
+  if (es) es.close();
+  $('#runwrap').classList.add('open');
+  $('#toggleLog').textContent = 'Hide log';
+  es = new EventSource('/api/stream');
+  es.addEventListener('line', (ev) => logLine(JSON.parse(ev.data)));
+  es.addEventListener('end', (ev) => {
+    const code = JSON.parse(ev.data);
+    setRunning(false, code === 0 ? 'finished' : 'finished with errors');
+    $('#dot').className = 'dot' + (code === 0 ? '' : ' dead');
+    es.close(); es = null;
+    load();
+  });
+  es.onerror = () => { setRunning(false, 'disconnected'); if (es) { es.close(); es = null; } };
+  setRunning(true, stage === 'all' ? 'full pass' : stage);
+}
+
+document.querySelector('.controls').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-run]');
+  if (!b) return;
+  const stage = b.dataset.run;
+  $('#log').textContent = '';
+  const r = await fetch('/api/run', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ stage, free: $('#free').checked }),
+  });
+  if (!r.ok) { logLine(await r.text()); $('#runwrap').classList.add('open'); return; }
+  attach(stage);
+});
+
+$('#stop').onclick = () => fetch('/api/stop', { method: 'POST' });
+$('#refresh').onclick = () => load();
+$('#toggleLog').onclick = () => {
+  const open = $('#runwrap').classList.toggle('open');
+  $('#toggleLog').textContent = open ? 'Hide log' : 'Show log';
+};
+
+/* ── rendering ─────────────────────────────────────────────────────────── */
+function renderChips(c) {
+  const items = [
+    ['facts', c.facts], ['entities', c.entities], ['findings', c.findings],
+    ['signals', c.signals], ['model calls', c.calls],
+    ['spent', (Number(c.cents || 0)).toFixed(2) + '¢'],
+  ];
+  $('#chips').innerHTML = items.map(([k, v]) =>
+    `<div class="chip"><b>${esc(v)}</b><span>${esc(k)}</span></div>`).join('');
+}
+
+function renderFindings(rows) {
+  $('#n-findings').textContent = rows.length || '';
+  if (!rows.length) { $('#findings').innerHTML = '<div class="empty">No findings yet. Run the watch — the first pass writes a baseline, and every pass after it can detect a change.</div>'; return; }
+  $('#findings').innerHTML = rows.map(f => `
+    <article class="card ${f.supersede_reason ? 'withdrawn' : ''}">
+      <h3>${esc(f.claim)}</h3>
+      ${f.supersede_reason ? `<div class="sowhat"><span class="tag moved">withdrawn</span> ${esc(f.supersede_reason)}</div>` : ''}
+      <div class="sowhat">${esc(f.so_what)}</div>
+      ${f.span ? `<div class="span">${esc(f.span)}</div>` : ''}
+      <div class="meta">
+        <span>${esc(f.subject)}</span><span>basis ${esc(f.basis)}</span>
+        <span>score ${esc(f.score)}</span><span>${esc(f.created)}</span>
+        ${f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noreferrer noopener">source</a>` : ''}
+      </div>
+    </article>`).join('');
+}
+
+function renderCompetitors(facts) {
+  $('#n-facts').textContent = facts.length || '';
+  const by = {};
+  for (const f of facts) (by[f.company] ||= []).push(f);
+  const names = Object.keys(by).sort();
+  if (!names.length) { $('#competitors').innerHTML = '<div class="empty">Nothing observed yet.</div>'; return; }
+  $('#competitors').innerHTML = names.map(n => `
+    <article class="card">
+      <h3>${esc(n)}</h3>
+      <div class="meta"><span>${by[n].length} measures on record</span></div>
+      <div class="scroll"><table>
+        <thead><tr><th>measure</th><th>value</th><th>since</th><th>evidence</th></tr></thead>
+        <tbody>${by[n].map(f => `
+          <tr>
+            <td>${esc(f.predicate.replace(/_/g, ' '))}</td>
+            <td class="v">${esc(f.value)}</td>
+            <td class="v">${esc(f.since)}</td>
+            <td>${f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noreferrer noopener">page</a>` : '—'}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>
+    </article>`).join('');
+}
+
+function renderForecasts(preds) {
+  $('#n-preds').textContent = preds.length || '';
+  const human = preds.filter(p => p.author.startsWith('human:')).length;
+  if (!preds.length) { $('#forecasts').innerHTML = '<div class="empty">No open forecasts.</div>'; return; }
+  $('#forecasts').innerHTML = `
+    <article class="card">
+      <h3>Open forecasts</h3>
+      <div class="meta"><span>${preds.length} open</span><span>${human} yours</span><span>${preds.length - human} the agent's</span></div>
+      <div class="scroll"><table>
+        <thead><tr><th>claim</th><th>p</th><th>author</th><th>resolves</th></tr></thead>
+        <tbody>${preds.map(p => `
+          <tr>
+            <td>${esc(p.claim)}</td>
+            <td class="p">${esc(Number(p.p).toFixed(2))}</td>
+            <td class="v">${esc(p.author.startsWith('human:') ? 'you' : 'agent')}</td>
+            <td class="v">${esc(p.resolves)}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>
+    </article>`;
+}
+
+function renderSources(rows) {
+  $('#n-sources').textContent = rows.length || '';
+  $('#sources').innerHTML = `
+    <article class="card"><div class="scroll"><table>
+      <thead><tr><th>source</th><th>tier</th><th>last ok</th><th>consecutive failures</th></tr></thead>
+      <tbody>${rows.map(s => `
+        <tr>
+          <td>${esc(s.name)}</td><td class="v">${esc(s.tier)}</td>
+          <td class="v">${esc(s.last_ok || '—')}</td>
+          <td class="v">${s.fails > 0 ? `<span class="tag moved">${esc(s.fails)}</span>` : '0'}</td>
+        </tr>`).join('')}</tbody>
+    </table></div></article>`;
+}
+
+/* ── forecast form ─────────────────────────────────────────────────────── */
+async function loadQuestions() {
+  const qs = await (await fetch('/api/questions')).json();
+  const open = qs.filter(q => q.yours === null);
+  $('#fcKey').innerHTML = open.map(q =>
+    `<option value="${esc(q.key)}">${esc(q.claim)}</option>`).join('');
+  $('#fcHint').textContent = open.length
+    ? `${open.length} of ${qs.length} unanswered. The agent's number stays hidden until yours is in — reading it first makes your forecast a copy of it, and two correlated numbers cannot be scored against each other.`
+    : 'You have forecast every open question.';
+  $('#fcSave').disabled = open.length === 0;
+}
+
+$('#fcSave').onclick = async () => {
+  $('#fcMsg').innerHTML = '';
+  const body = { key: $('#fcKey').value, p: $('#fcP').value, because: $('#fcWhy').value };
+  const r = await fetch('/api/forecast', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const t = await r.text();
+  if (!r.ok) { $('#fcMsg').innerHTML = `<div class="err">${esc(t)}</div>`; return; }
+  $('#fcMsg').innerHTML = `<div class="okmsg">${esc(t)}</div>`;
+  $('#fcP').value = ''; $('#fcWhy').value = '';
+  await loadQuestions(); await load();
+};
+
+/* ── boot ──────────────────────────────────────────────────────────────── */
+async function load() {
+  STATE = await (await fetch('/api/state')).json();
+  renderChips(STATE.counts);
+  renderFindings(STATE.findings);
+  renderCompetitors(STATE.facts);
+  renderForecasts(STATE.preds);
+  renderSources(STATE.sources);
+}
+
+async function boot() {
+  await load();
+  await loadQuestions();
+  // If a pass is already in flight (another tab started it, or a reload
+  // mid-run), join it rather than showing a misleading idle state.
+  const s = await (await fetch('/api/status')).json();
+  if (s.running) {
+    $('#log').textContent = s.lines.join('\n');
+    attach(s.stage);
+  }
+}
+boot();
+</script>
+</body>
+</html>

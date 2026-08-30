@@ -29,7 +29,8 @@
         "src/digest.ts",
         "src/run.ts",
         "src/brain-sync.ts",
-        "src/resolve.ts"
+        "src/resolve.ts",
+        "src/forecast.ts"
       ]
     }
   }

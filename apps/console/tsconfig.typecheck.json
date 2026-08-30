@@ -1,0 +1,8 @@
+{
+  // Same reason as every package: the build must not emit tests into dist, but
+  // a type error inside a test is a broken proof and must still fail typecheck.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["src/**/*.ts"],
+  "exclude": []
+}

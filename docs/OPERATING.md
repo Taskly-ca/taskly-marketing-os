@@ -6,33 +6,44 @@ built and why; this says what to type.
 
 ---
 
-## The short version
-
-**You do not run it. It runs.** A LaunchAgent fires one pass at **07:30 daily**,
-and the two things you actually consume are:
-
-1. **An email** — only when something earns the interruption. Silence is a
-   result, not a failure.
-2. **`apps/worker/briefing.html`** — the full picture, regenerated from the
-   database on every pass. `open apps/worker/briefing.html`.
-
-Everything below is for when you want more than that.
-
----
-
-## Is it alive?
+## Start here — the console
 
 ```bash
-launchctl list | grep tmos          # <pid> 0 ca.taskly.tmos
-ls -l apps/worker/briefing.html     # mtime = the last successful pass
+pnpm console
 ```
 
-**The mtime is the proof, not the log.** `/tmp/tmos.log` gets swept by macOS, so
-a missing log is not a failed run. If the briefing regenerated, the pass ran.
+Then open **http://127.0.0.1:4478**. That is the app: press a stage, watch it
+run line by line, and read what it found. Everything below is the same thing
+from a terminal.
 
-Stop it: `launchctl unload ~/Library/LaunchAgents/ca.taskly.tmos.plist`
-Start it: `launchctl load ~/Library/LaunchAgents/ca.taskly.tmos.plist`
-Run it now: `launchctl start ca.taskly.tmos`
+**Nothing is scheduled.** A pass runs when you press one. `scripts/schedule.md`
+still documents launchd for whoever wants it back; nothing loads it for you.
+
+The console binds to **127.0.0.1 only** — it holds a database connection and can
+spawn the worker, so it is not something to put on a network. There is no auth,
+and that is only acceptable because nothing off this machine can reach it.
+
+### What the buttons do
+
+| button | what runs |
+|---|---|
+| Run full pass | all seven stages, ~90–150s |
+| Watch competitors | just the competitor pages — the stage that finds changes |
+| Collect | just the free sources into `signal` |
+| Reason | triage + synthesis over what was collected |
+| Rebuild briefing | regenerate the page from the database, spends nothing |
+| free only | skips the two stages that spend on a model |
+
+A second run is **refused** while one is in flight, on purpose: two interleaved
+passes can make the second read the first's write and classify a genuine
+competitor change as already-seen — losing it silently, while looking healthy.
+
+### The tabs
+
+- **What changed** — findings, withdrawn ones included and struck through.
+- **Competitors** — every measure on record, with the page it came from.
+- **Forecasts** — the open ledger, plus the form to write your own.
+- **Sources** — what is feeding it and what is failing.
 
 ---
 
