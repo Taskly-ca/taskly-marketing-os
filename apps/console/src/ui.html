@@ -104,6 +104,9 @@
        text-transform:uppercase;padding:2px 7px;border-radius:999px;
        border:1px solid var(--line);color:var(--muted)}
   .tag.moved{color:var(--moved);border-color:var(--moved)}
+  .tag.held{color:var(--hold);border-color:var(--hold)}
+  .card.attention{border-color:var(--moved)}
+  .card.attention h3{margin-top:10px}
 
   table{width:100%;border-collapse:collapse;font-size:13px}
   th{text-align:left;font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;
@@ -279,8 +282,10 @@
     </section>
 
     <section class="panel" data-panel="sources">
-      <p class="lead">Where signals come from. A source failing for days is usually robots.txt
-      and usually permanent — the gate is fail-closed by design.</p>
+      <p class="lead">Where signals come from, and which of them is waiting on you. A source is
+      broken in one of three ways and only one of them fixes itself: <b>needs you</b> is a
+      credential no retry can repair, <b>refused</b> is a site declining to be read (we do not
+      fetch what a host refuses), and <b>retrying</b> is an outage the backoff will clear.</p>
       <div id="sources"></div>
     </section>
   </main>
@@ -446,16 +451,64 @@ function renderForecasts(preds) {
     </article>`;
 }
 
+/* Deliberately about the REMEDY, not the error code: "401" tells an operator
+   nothing they can do, "needs you" tells them everything. Mirrors SourceHealth
+   in apps/worker/src/backoff.ts, which is the definition. */
+const HEALTH_LABEL = {
+  needs_operator: 'needs you',
+  refused: 'refused',
+  transient: 'retrying',
+  healthy: 'ok',
+};
+
+const days = (n) => n === null || n === undefined ? '' : n === 0 ? 'today' : n === 1 ? '1 day' : `${n} days`;
+/* Product Hunt's 401 carries their whole API-documentation paragraph. The first
+   clause is the part an operator needs; the rest is in the event log. */
+const clamp = (s, n = 200) => !s ? '' : s.length <= n ? s : s.slice(0, n - 1) + '…';
+
 function renderSources(rows) {
-  $('#n-sources').textContent = rows.length || '';
-  $('#sources').innerHTML = `
+  // The count on the tab is the number of sources WAITING ON SOMEONE, not the
+  // number of sources. A badge that reads "9" when everything is fine is a
+  // badge nobody looks at twice.
+  const attention = rows.filter(s => s.health === 'needs_operator');
+  $('#n-sources').textContent = attention.length || '';
+
+  // One sentence per source that needs a person, at the top, with the age of
+  // the streak in it — the whole point is that "Product Hunt has needed a new
+  // token for nine days" is legible without opening a log.
+  const banner = attention.length ? `
+    <article class="card attention">
+      <span class="eyebrow">Waiting on you</span>
+      ${attention.map(s => `
+        <h3>${esc(s.name)} — ${esc(days(s.failing_days))}</h3>
+        <div class="sowhat">${esc(s.fails)} straight ${s.fails === 1 ? 'failure' : 'failures'} since
+          ${esc(s.failing_since || 'the first pass')}, and no retry will clear it.</div>
+        ${s.detail ? `<div class="span">${esc(clamp(s.detail))}</div>` : ''}`).join('')}
+    </article>` : '';
+
+  // Refusals are listed but never as work: nothing an operator does changes a
+  // host's mind, and putting them on a to-do list is how a to-do list dies.
+  const refused = rows.filter(s => s.health === 'refused');
+  const declined = refused.length ? `
+    <article class="card">
+      <span class="eyebrow">Refused — nothing to do</span>
+      <div class="sowhat">These hosts decline to be read. That is their call and we honour it;
+      there is no workaround and none is wanted. Each is re-asked about once a day in case the
+      rule changes, and never more often than that.</div>
+      ${refused.map(s => `
+        <div class="span">${esc(s.name)} · ${esc(days(s.failing_days))} · ${esc(clamp(s.detail))}</div>`).join('')}
+    </article>` : '';
+
+  $('#sources').innerHTML = banner + declined + `
     <article class="card"><div class="scroll"><table>
-      <thead><tr><th>source</th><th>tier</th><th>last ok</th><th>consecutive failures</th></tr></thead>
+      <thead><tr><th>source</th><th>tier</th><th>state</th><th>last ok</th><th>failing for</th><th>fails</th></tr></thead>
       <tbody>${rows.map(s => `
         <tr>
           <td>${esc(s.name)}</td><td class="v">${esc(s.tier)}</td>
-          <td class="v">${esc(s.last_ok || '—')}</td>
-          <td class="v">${s.fails > 0 ? `<span class="tag moved">${esc(s.fails)}</span>` : '0'}</td>
+          <td class="v"><span class="tag ${s.health === 'healthy' ? '' : s.health === 'transient' ? 'held' : 'moved'}">${esc(HEALTH_LABEL[s.health] || s.health)}</span></td>
+          <td class="v">${esc(s.last_ok || 'never')}</td>
+          <td class="v">${esc(days(s.failing_days) || '—')}</td>
+          <td class="v">${s.fails > 0 ? esc(s.fails) : '0'}</td>
         </tr>`).join('')}</tbody>
     </table></div></article>`;
 }

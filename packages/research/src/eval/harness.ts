@@ -347,9 +347,31 @@ export function formatEvalReport(r: EvalReport): string {
   out.push(`  recorded cost of these transcripts: ${r.costCents.toFixed(3)}¢ (re-scoring them is free)`);
   out.push('');
   out.push('DETERMINISTIC — ALCE-style citation metrics, no model in the loop');
-  const line = (label: string, m: EvalCitationMetrics): string =>
-    `  ${label.padEnd(10)} recall ${pct(m.recall)}  strict-recall ${pct(m.strictRecall)}  precision ${pct(m.precision)}` +
-    `  (${m.statements} statement(s), ${m.citations} citation(s), ${m.vacuousStatements} with nothing checkable)`;
+  /**
+   * A RATE OVER AN EMPTY SET IS NOT 100%, AND PRINTING IT AS 100% IS A LIE.
+   *
+   * The first live run reported `grounded recall 100.0% (0 statement(s))`
+   * because no grounded case was marked live — a perfect score for a mode that
+   * had not been measured at all. Anyone scanning the block would read a column
+   * of green. `0/0` is what actually happened.
+   *
+   * The count in brackets was already there, and it is the reason this was
+   * caught rather than believed — but a number nobody has to cross-check beats
+   * a number they might.
+   */
+  const line = (label: string, m: EvalCitationMetrics): string => {
+    if (m.statements === 0) {
+      return `  ${label.padEnd(10)} not measured — no statements were scored in this slice`;
+    }
+    return (
+      `  ${label.padEnd(10)} recall ${pct(m.recall)}  strict-recall ${pct(m.strictRecall)}  precision ${pct(m.precision)}` +
+      `  (${m.statements} statement(s), ${m.citations} citation(s), ${m.vacuousStatements} with nothing checkable)` +
+      // Small-n is the failure mode of a set this size: 50% over two statements
+      // is one sentence, and quoting it as a rate is how a baseline becomes a
+      // claim. The warning rides ON the line, not in a footnote nobody reads.
+      (m.statements < 10 ? `  ⚠ too few to be a rate` : '')
+    );
+  };
   out.push(line('all', r.citations));
   out.push(line('web', r.web));
   out.push(line('grounded', r.grounded));

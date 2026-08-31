@@ -53,7 +53,7 @@ import {
 import { fail, type CollectResult, type CollectorContext } from '@tmos/collectors';
 import { buildEvent, idempotencyKey, type EventRow, type QueueMessage } from '@tmos/gate';
 
-import { dueVerdict } from './backoff.js';
+import { dueVerdict, healthFromFailure } from './backoff.js';
 import { dropHistogram, runGate, type GateOutcome } from './gate.js';
 import {
   COLLECTED_EVENT,
@@ -165,8 +165,23 @@ function relabel(result: CollectResult, denials: readonly string[]): CollectResu
   return fail('blocked_by_policy', denials.join('; '), false);
 }
 
+/**
+ * The one line an operator reads per source, and the reason it names the REMEDY
+ * before the error.
+ *
+ * `blocked_by_policy: robots.txt disallows /feed/` and `network: ETIMEDOUT`
+ * used to print identically as far as "what do I do about it" goes — the first
+ * is permanent and nobody's to fix, the second clears itself. Leading with
+ * `refused` / `needs a person` / `retrying` is what lets someone skim the pass
+ * and stop only on the row that is waiting on them.
+ */
 function describe(result: CollectResult): string {
-  if (!result.ok) return `${result.reason}: ${result.detail}`;
+  if (!result.ok) {
+    const health = healthFromFailure(result.reason);
+    const lead =
+      health === 'refused' ? 'refused' : health === 'needs_operator' ? 'needs a person' : 'retrying';
+    return `${lead} — ${result.reason}: ${result.detail}`;
+  }
   if (result.notModified === true) return '304 not modified';
   return `${result.items.length} item(s)`;
 }
@@ -257,7 +272,22 @@ export async function ingest(options: IngestOptions, deps: IngestDeps): Promise<
     const state = states.get(entry);
     if (state === undefined) continue;
     const verdict = dueVerdict(
-      { consecutiveFailures: state.consecutive_failures, lastAttemptAt: lastAttempts.get(state.id) ?? null },
+      {
+        consecutiveFailures: state.consecutive_failures,
+        lastAttemptAt: lastAttempts.get(state.id) ?? null,
+        // `last_ok_at` is the only durable evidence the table carries that this
+        // source has EVER worked, and it is what separates a source having a
+        // bad afternoon from one that has never produced a single item.
+        everSucceeded: state.last_ok_at !== null,
+        // NOT KNOWN HERE, AND THAT IS A GAP, NOT A CHOICE. The collector's own
+        // `reason` is written into every `source.collect_failed` payload and
+        // never read back; the reader that would return it belongs beside
+        // `lastAttemptAt` in `store.ts`. Until it exists `sourceHealth` falls
+        // back to the streak — which reaches the right verdict for all three of
+        // the sources that were failing on 2026-08-30, but reaches it by
+        // inference rather than by reading what the source actually said.
+        lastFailure: null,
+      },
       deps.now(),
       jitter(),
     );

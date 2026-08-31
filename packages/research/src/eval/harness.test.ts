@@ -16,6 +16,8 @@ import type { GroundedAnswer, StreamedAnswer } from '../stream.js';
 import { EVAL_CASES, EVAL_FIXTURES } from './cases.js';
 import { formatEvalReport, runEval, transcriptFromGrounded, transcriptFromStreamed } from './harness.js';
 import { scoreCitations } from './metrics.js';
+import type { EvalCitationMetrics } from './metrics.js';
+import type { EvalReport } from './harness.js';
 import type { EvalCase, EvalTranscript } from './types.js';
 
 describe('the regression set itself', () => {
@@ -265,5 +267,56 @@ describe('formatEvalReport', () => {
     expect(text).toContain('WHAT THESE NUMBERS CANNOT SEE');
     expect(text).toContain('cannot tell "these words are in the span"');
     expect(text).toContain('second-hand');
+  });
+});
+
+/**
+ * Fixtures DERIVED from the real code, never hand-written.
+ *
+ * The first attempt restated `EvalCitationMetrics` and `EvalReport` as object
+ * literals and immediately drifted from both — seven fields missing between
+ * them. A fixture that restates a shape is a second declaration of it, and the
+ * copy is the one that goes stale.
+ */
+const emptyReport = async (): Promise<EvalReport> => runEval([], () => null);
+
+/** N statements, each genuinely carried by the one span it cites, so the slice
+ *  scores a clean 1.0 and the ONLY variable under test is how many there are. */
+const slice = (statements: number): EvalCitationMetrics =>
+  scoreCitations({
+    caseId: 'x',
+    mode: 'web',
+    question: 'q',
+    spans: [{ id: 1, locator: 'https://j.com', text: 'Jiffy charges $40 a visit' }],
+    sentences: Array.from({ length: statements }, (_, n) => ({
+      n,
+      text: 'Jiffy charges $40 a visit [1].',
+      verdict: 'confirmed' as const,
+    })),
+    sourceLocators: ['https://j.com'],
+    note: '',
+    costCents: 0,
+  });
+
+describe('the report refuses to flatter an empty or tiny slice', () => {
+  /**
+   * The first live run printed `grounded recall 100.0% (0 statement(s))` — a
+   * perfect score for a mode that had not been measured at all, sitting in a
+   * column a reader scans for green.
+   */
+  it('says "not measured" instead of a rate when nothing was scored', async () => {
+    const text = formatEvalReport({ ...(await emptyReport()), grounded: slice(0) });
+    expect(text).toMatch(/grounded\s+not measured/);
+    expect(text).not.toMatch(/grounded\s+recall/);
+  });
+
+  it('marks a rate nobody should quote as a rate', async () => {
+    // 50% over two statements is one sentence. Quoting it is how a
+    // scorer-calibration baseline turns into an accuracy claim.
+    expect(formatEvalReport({ ...(await emptyReport()), web: slice(2) })).toMatch(/too few to be a rate/);
+  });
+
+  it('drops the warning once the slice can carry one', async () => {
+    expect(formatEvalReport({ ...(await emptyReport()), web: slice(40) })).not.toMatch(/too few to be a rate/);
   });
 });

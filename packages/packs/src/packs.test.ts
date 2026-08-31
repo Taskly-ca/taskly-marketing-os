@@ -60,6 +60,75 @@ describe('the second pack is a second DOMAIN, not a second copy', () => {
   });
 });
 
+/**
+ * HIRING TARGETS — the taxonomy, exercised on a second kind of document.
+ *
+ * A careers page and a job board answer the same question and must be measured
+ * differently, which is the whole reason these two targets exist side by side:
+ * the board is machine-readable so it is read by an instrument and every
+ * measure on it is `measured`; the page is prose so it is read by a model and
+ * every measure on it has to be one a model cannot drift on.
+ */
+describe('the careers targets', () => {
+  const careers = marketingCanada.targets.filter((t) =>
+    t.measures.some((m) => m.predicate.startsWith('careers_')),
+  );
+
+  it('watches hiring at all — two forecasts depended on it and nothing did', () => {
+    expect(careers.length).toBeGreaterThan(1);
+  });
+
+  it('reads a machine-readable board with an instrument, and asks it nothing', () => {
+    const board = careers.find((t) => t.url.includes('boards-api.greenhouse.io'));
+    expect(board).toBeDefined();
+    // Every measure `measured` means `extractFromPage` is never reached for it:
+    // `asked` filters `measured` out, so there is no model call and no span to
+    // drift. That is the property, not an accident of how it was declared.
+    expect(board?.measures.every((m) => m.answer === 'measured')).toBe(true);
+  });
+
+  it('reads a prose careers page only with measures a model cannot drift on', () => {
+    const page = careers.find((t) => t.url.endsWith('/careers'));
+    expect(page).toBeDefined();
+    // Bounded or quoted, never open: an `open` measure here would be the
+    // category count again, wearing a job title.
+    for (const m of page?.measures ?? []) {
+      expect(['bounded', 'quoted'], m.predicate).toContain(m.answer);
+      expect(publishes(m), m.predicate).toBe(true);
+    }
+  });
+
+  it('asks the page the BOOLEAN the open forecasts are really about', () => {
+    /**
+     * "Jiffy lists at least 3 engineering roles" is a count and cannot publish.
+     * "Does the page name an engineering role, yes or no" is bounded, cannot
+     * drift by a word, and its flip from no to yes is the event the forecast is
+     * actually about. Both are kept: the count as a recorded series, the
+     * boolean as the thing that can be reported.
+     */
+    const predicates = new Set(careers.flatMap((t) => t.measures.map((m) => m.predicate)));
+    expect(predicates).toContain('careers_page_names_engineering_role');
+    expect(predicates).toContain('careers_page_names_growth_role');
+    expect(predicates).toContain('careers_engineering_role_count');
+    expect(predicates).toContain('careers_growth_role_count');
+  });
+
+  it('never gives one company two documents that fight over one predicate', () => {
+    // Both careers targets and both service targets resolve to entities by
+    // `domain`, so a predicate declared on two targets with the same domain is
+    // two readings racing for one fact slot, and the last write silently wins.
+    const seen = new Map<string, Set<string>>();
+    for (const t of marketingCanada.targets) {
+      const held = seen.get(t.domain) ?? new Set<string>();
+      for (const m of t.measures) {
+        expect(held.has(m.predicate), `${t.domain}:${m.predicate}`).toBe(false);
+        held.add(m.predicate);
+      }
+      seen.set(t.domain, held);
+    }
+  });
+});
+
 describe('invariants every pack holds', () => {
   for (const pack of PACKS) {
     describe(pack.id, () => {
@@ -98,6 +167,26 @@ describe('invariants every pack holds', () => {
             if (m.answer === 'open' || m.answer === 'measured') {
               expect(publishes(m), m.predicate).toBe(false);
             }
+          }
+        }
+      });
+
+      it('never lets a COUNT publish, however it was obtained', () => {
+        /**
+         * The lesson `service_categories_count` cost us, generalised.
+         *
+         * A count is unciteable by construction — no span on any document
+         * contains the number 6 — so it may never publish, and that holds
+         * whether a model composed it (`open`) or an instrument computed it
+         * (`measured`). The careers measures added the second case: a role
+         * count read deterministically off a JSON job board is stable in a way
+         * the category count never was, and it is STILL unpublishable, for a
+         * different reason. Declaring one `bounded` would slip a number past
+         * L0 by relabelling it.
+         */
+        for (const t of pack.targets) {
+          for (const m of t.measures.filter((x) => x.unit === 'count')) {
+            expect(publishes(m), m.predicate).toBe(false);
           }
         }
       });

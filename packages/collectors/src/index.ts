@@ -25,6 +25,7 @@ export * from './hn.js';
 export * from './gdelt.js';
 export * from './product-hunt.js';
 export * from './gsc.js';
+export * from './trends.js';
 
 import { createGscCollector } from './gsc.js';
 import { createProductHuntCollector } from './product-hunt.js';
@@ -33,9 +34,9 @@ import type { Collector } from './types.js';
 /**
  * The credentialed sources, bound to a run's env.
  *
- * The keyless ones (rss/hn/gdelt) are deliberately NOT here: each needs a feed
- * URL or a query, so they are constructed per watchlist entry by the runner
- * rather than registered as singletons.
+ * The keyless ones (rss/hn/gdelt/trends) are deliberately NOT here: each needs
+ * a feed URL, a query or a term list, so they are constructed per watchlist
+ * entry by the runner rather than registered as singletons.
  */
 export function credentialedCollectors(env: Record<string, string | undefined>): Collector[] {
   return [createProductHuntCollector(env), createGscCollector(env)];

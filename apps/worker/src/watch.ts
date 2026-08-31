@@ -54,6 +54,7 @@ import {
   type WatchTarget,
 } from '@tmos/packs';
 import { quoteSlugs, readSitemap, type SitemapReading } from './sitemap.js';
+import { boardReadings, boardUrlFor, readBoard, type BoardReading } from './careers.js';
 import { catalogueClaim } from './catalogue-finding.js';
 import { loadFactSheet } from './fact-sheet.js';
 import { createGroqVerifier, verifyForPublication } from './verifier.js';
@@ -244,6 +245,32 @@ async function readSitemapFor(
     // a company inventing an entire catalogue overnight.
     return reading.count === 0 ? null : reading;
   } catch {
+    return null;
+  }
+}
+
+/**
+ * The job board, or null when it cannot be read. Never throws a run down.
+ *
+ * `Accept: application/json` and nothing else: this is an API, and the one
+ * thing that must not happen is an HTML error page reaching a JSON parser and
+ * arriving as an empty board. `readBoard` refuses that too — belt and braces,
+ * because an empty board mints a claim that a competitor withdrew every role
+ * they had.
+ */
+async function readBoardFor(
+  transport: ReturnType<typeof createTransport>,
+  url: string,
+  observedAt: string,
+): Promise<BoardReading | null> {
+  try {
+    const res = await transport.fetchText(url, { Accept: 'application/json' });
+    if (res.status < 200 || res.status >= 300) return null;
+    return readBoard(res.body, { sourceUrl: url, observedAt });
+  } catch {
+    // Refused by policy, or unreachable. Both are "nothing recorded from it",
+    // and neither may be retried through a third party — routing a refused
+    // fetch around the gate is the definition of working around it.
     return null;
   }
 }
@@ -495,20 +522,52 @@ export async function watchCompetitors(
       }
     }
 
-    const page = await readPage(transport, t.url, render);
-    if (page === null) {
-      console.log('  page: too little text to read, or refused');
+    /**
+     * A TARGET IS EITHER A DOCUMENT A MODEL READS OR A BOARD AN INSTRUMENT
+     * READS, and which one is decided by the URL rather than by a flag.
+     *
+     * `boardUrlFor` recognises a machine-readable job board and refuses
+     * everything else, so the default is unchanged: an ordinary page still goes
+     * to `readPage` and the extractor. A board goes to `careers.ts`, which has
+     * no model in it, and asking a model to answer "how many cities" about a
+     * JSON array of requisitions would be a wasted call and a drifting one.
+     *
+     * The alternative shape — a `careers` field on `WatchTarget` beside
+     * `sitemap` — is the tidier one and belongs in `@tmos/packs`. This wiring
+     * is deliberately the smaller change, and the day a second board provider
+     * arrives is the day that field is worth adding.
+     */
+    const boardUrl = boardUrlFor(t.url);
+    /** Whether the target's OWN document came back. Feeds the retrieval ledger,
+     *  which L0 checks a citation against, so it must never be optimistic. */
+    let documentRead = false;
+
+    if (boardUrl !== null) {
+      const board = await readBoardFor(transport, boardUrl, now);
+      if (board === null) {
+        process.stdout.write('  board: unreadable, or listing nothing — nothing recorded from it\n');
+      } else {
+        documentRead = true;
+        readings.push(...boardReadings(t.company, t.measures, board));
+        process.stdout.write(`  board: ${board.count} distinct roles listed (no model involved)\n`);
+      }
     } else {
-      const extracted = await extractFromPage(env, limits, t, page);
-      spent += extracted.spentCents;
-      readings.push(...extracted.readings);
-      if (extracted.discarded > 0) console.log(`  (${extracted.discarded} answer(s) discarded)`);
-      for (const why of extracted.refusals) console.log(`  ✗ ${why}`);
+      const page = await readPage(transport, t.url, render);
+      if (page === null) {
+        console.log('  page: too little text to read, or refused');
+      } else {
+        documentRead = true;
+        const extracted = await extractFromPage(env, limits, t, page);
+        spent += extracted.spentCents;
+        readings.push(...extracted.readings);
+        if (extracted.discarded > 0) console.log(`  (${extracted.discarded} answer(s) discarded)`);
+        for (const why of extracted.refusals) console.log(`  ✗ ${why}`);
+      }
     }
 
     if (readings.length === 0) continue;
 
-    const retrievedUrls = retrievalLedger({ pageUrl: t.url, pageRead: page !== null, sitemapUrl });
+    const retrievedUrls = retrievalLedger({ pageUrl: t.url, pageRead: documentRead, sitemapUrl });
     const entityId = await ensureEntity(t.company, t.domain);
 
     for (const a of readings) {
