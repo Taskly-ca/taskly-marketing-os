@@ -53,6 +53,38 @@ export function toText(html: string): string {
      * before any span is checked against it, all three see the same string —
      * which is the property the whole citation guarantee rests on.
      */
+    /**
+     * CONTROL BYTES ARE STRIPPED HERE OR THEY LOSE THE WHOLE TURN.
+     *
+     * Postgres `text` and `jsonb` cannot hold U+0000. A page that serves one —
+     * PDFs rendered to text are the usual source — streams to the reader
+     * perfectly and then kills the INSERT that stores it:
+     *
+     *   appendMessage: unsupported Unicode escape sequence
+     *   (\u0000 cannot be converted to text.)
+     *
+     * Observed 2026-08-31 on a live web answer citing four toronto.ca PDFs. The
+     * reader watched a complete, cited, checked answer appear on screen; the
+     * thread kept the question and lost the answer. **A failure after the last
+     * delta is the worst-shaped bug this system can have**, because everything
+     * that would tell you something went wrong has already said it went right.
+     *
+     * Stripped at INGESTION rather than at the store, and the distinction
+     * matters: sanitising on the way to Postgres would make the stored text
+     * differ from the text the model read and the span check ran against, which
+     * is the one property the citation guarantee rests on. Cleaned here, all
+     * three see the same string.
+     *
+     * The range is C0 minus tab/newline/carriage-return, plus the C1 block and
+     * U+2028/U+2029, which are legal in JSON but break naive line handling
+     * downstream. Replaced with a space, never deleted — for the same reason
+     * U+FFFD is: closing a gap can fuse two tokens into a figure that appears
+     * nowhere.
+     */
+    // The rule below guards against a control character arriving in a pattern
+    // by accident, usually pasted. Here matching them is the entire job.
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u2028\u2029]/g, ' ')
     .replace(/\uFFFD/g, ' ')
     .replace(/[ \t\u00A0]+/g, ' ')
     .replace(/\n\s*\n\s*\n+/g, '\n\n')

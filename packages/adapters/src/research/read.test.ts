@@ -36,6 +36,25 @@ describe('toText', () => {
     expect(text).not.toContain('�');
   });
 
+  it('strips a NUL byte, which Postgres cannot store and which loses the turn', () => {
+    // Live, 2026-08-31: a web answer citing four toronto.ca PDFs streamed to
+    // the reader complete, cited and checked — then the INSERT failed with
+    // "unsupported Unicode escape sequence (\\u0000 cannot be converted to
+    // text)". The thread kept the question and lost the answer.
+    expect(toText('<p>budget of \u0000$100 million</p>')).toBe('budget of $100 million');
+    expect(toText('<p>a\u0000b</p>')).not.toContain('\u0000');
+  });
+
+  it('replaces a control byte with a space rather than closing the gap', () => {
+    // Deleting it would fuse "$40" and "$70" into $4070 — a figure on no page.
+    expect(toText('<p>$40\u0000$70</p>')).toBe('$40 $70');
+  });
+
+  it('leaves tab, newline and carriage return alone', () => {
+    // They are structure, not corruption; newlines survive on purpose.
+    expect(toText('<p>a\nb</p>')).toContain('\n');
+  });
+
   it('collapses spaces but KEEPS newlines — paragraph structure is meaning', () => {
     // Line breaks survive on purpose: a page's paragraph boundaries are part of
     // what the model reads. Cross-line matching is `normalise`'s job at compare
