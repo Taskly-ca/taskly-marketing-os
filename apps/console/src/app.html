@@ -2565,8 +2565,15 @@ function revisionRow(r) {
 function reflectRow(rf) {
   const li = el('li');
   const box = el('div', 'refl' + (rf.stop ? ' stop' : ''));
+  // A run emits one LAST reflection that is about the run, not about the step
+  // it happens to follow — it carries `stop` and reports the totals. Rendered
+  // with the step heading it produced two boxes both titled "after step 5",
+  // one of them a summary, which reads as the run thinking twice about the
+  // same step.
   box.appendChild(el('span', 'eyebrow',
-    rf.after > 0 ? 'What the run thought after step ' + rf.after : 'What the run thought'));
+    rf.stop ? 'How the run ended'
+      : rf.after > 0 ? 'What the run thought after step ' + rf.after
+      : 'What the run thought'));
   if (rf.note) box.appendChild(el('p', null, rf.note));
   if (rf.stillOpen.length) {
     box.appendChild(el('span', 'eyebrow', 'Still open'));
@@ -2930,7 +2937,10 @@ function finishTurn(turn, done) {
   // A replayed answer has no steps to re-open, and "Completed 0 steps" is a
   // button that lies about having something behind it.
   if (turn.steps.length > 0) {
-    turn.els.toggle.textContent = 'Completed ' + turn.steps.length + ' step' +
+    // These are PHASE steps (planning, searching, reading…), not the deep
+    // run's plan steps, and a deep answer showed "Completed 19 steps" directly
+    // above a panel reading "5/5 STEPS". One word, two meanings, one screen.
+    turn.els.toggle.textContent = 'Completed ' + turn.steps.length + ' stage' +
       (turn.steps.length === 1 ? '' : 's');
     turn.els.toggle.classList.remove('hidden');
   }
@@ -3187,7 +3197,21 @@ function renderRefusals(turn, done) {
       has('unanswered')
         ? (wroteNothing
             ? 'The run listed no gap — but it also wrote no answer, so read the reason above rather than this line.'
-            : 'The retrieved pages covered the question as asked.')
+            // AN EMPTY GAP LIST IS NOT A CLAIM OF COVERAGE.
+            //
+            // This read "The retrieved pages covered the question as asked."
+            // Live, 2026-08-31, a deep run on "which is the most trendy job in
+            // Toronto?" printed that under an answer whose own step-5
+            // reflection said "no final synthesis of which job is most trendy
+            // yet", and in which FOUR OF FIVE STEPS PROVED NOTHING. The panel
+            // whose entire job is to say what the answer does not carry was
+            // reassuring the reader instead.
+            //
+            // The run reports gaps it NOTICED. Silence is the absence of a
+            // report, never evidence the question was covered — the same
+            // distinction this file already draws two lines below for a missing
+            // frame, and got wrong here for an empty one.
+            : 'The run named no gap. That is silence, not a claim that the question was covered — judge that from the answer and the sources above.')
         : (done && done.messageId)
           ? 'This run named no gap. The gap list is only sent when there is one, so this is silence rather than a check that ran and passed.'
           : 'Not reported by this run.'));
