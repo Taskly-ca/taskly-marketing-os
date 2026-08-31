@@ -201,6 +201,7 @@ import {
 import { randomUUID } from 'node:crypto';
 
 import { db, sql } from '@tmos/db';
+import { DEFAULT_PACK_ID, packById } from '@tmos/packs';
 import { estimateCostCents, loadEnv, MODELS, type BudgetLimits } from '@tmos/shared';
 import {
   appendMessage,
@@ -275,6 +276,9 @@ export interface AnswerPorts {
   readonly askStream: AskStreamPort;
   readonly search: readonly SearchPort[];
   readonly read: ReadPort;
+  /** The pack's one line naming whose interests the queries serve. Optional:
+   *  absent plans exactly as this did before 2026-08-31, asserted by test. */
+  readonly subject?: string;
 }
 
 /**
@@ -1767,6 +1771,9 @@ export async function runAnswer(
     return;
   }
 
+  // Undefined when the id is unknown — the pipeline then plans exactly as it
+  // did before this was threaded, which is asserted by test.
+  const pack = packById(DEFAULT_PACK_ID);
   const runId = randomUUID();
   const limits: BudgetLimits = {
     maxRunTokens: env.TMOS_MAX_RUN_TOKENS,
@@ -1871,6 +1878,22 @@ export async function runAnswer(
         askStream: createAskStream(askConfig),
         search: providers,
         read: createResearchReader(),
+        /**
+         * WHOSE INTERESTS THE QUERIES SERVE.
+         *
+         * Live, 2026-08-31: "Should we run a snow-removal campaign in Toronto
+         * this October?" planned four queries about municipal policy, read
+         * eight City of Toronto PDFs, and reported the winter-maintenance
+         * budget. The gate behaved correctly and refused to pretend — but an
+         * honest answer to the wrong question is still the wrong answer, and
+         * nothing downstream can recover from evidence that was never about
+         * the subject.
+         *
+         * The pack has carried this sentence all along; it reached T1 triage
+         * and never the planner, which is the stage that decides what gets
+         * read at all. Grounded mode already used it.
+         */
+        subject: pack?.subject,
       },
       runId,
       now: () => new Date(),

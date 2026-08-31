@@ -568,6 +568,9 @@ export interface StreamDeps {
    * defence and the per-sentence checks are only the backstop.
    */
   readonly history?: readonly ConversationTurn[];
+  /** The pack's one-line statement of whose interests the queries serve. Absent
+   *  restores the pre-2026-08-31 behaviour exactly; see `subjectBlock`. */
+  readonly subject?: string;
   readonly onStatus?: (e: StatusEvent) => void;
   readonly onSource?: (e: SourceEvent) => void;
   readonly onSpan?: (e: SpanEvent) => void;
@@ -668,7 +671,7 @@ export async function streamAnswer(question: string, deps: StreamDeps): Promise<
   /* 1 ─ plan. With history this also resolves the follow-up into a standalone
    *       question and decides whether the last turn's pages still apply. */
   status({ phase: 'planning' });
-  const plan = await planSearches(question, history, deps.ask, limits.maxQueries);
+  const plan = await planSearches(question, history, deps.ask, limits.maxQueries, deps.subject);
   cost += plan.costCents;
   if (plan.note !== '') return stop(plan.note);
   queries = [...plan.queries];

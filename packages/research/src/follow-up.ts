@@ -181,15 +181,58 @@ const strings = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 
 /** Plan searches for a question that may be a follow-up. */
+/**
+ * WHOSE INTERESTS THE QUERIES SERVE.
+ *
+ * Live, 2026-08-31. Asked "Should we run a snow-removal campaign in Toronto
+ * this October?", the planner produced:
+ *
+ *   Toronto October snow removal demand statistics ·
+ *   City of Toronto snow removal policy October ·
+ *   Historical October snowfall totals Toronto ·
+ *   Toronto municipal budget allocation for snow removal
+ *
+ * It read eight City of Toronto PDFs and reported the municipal
+ * winter-maintenance budget. A marketing question, answered as municipal
+ * policy. The gate behaved correctly — it refused to pretend and said so — but
+ * an honest answer to the wrong question is still the wrong answer, and no
+ * check downstream can recover from evidence that was never about the subject.
+ *
+ * The pack has always carried the sentence that fixes this. `DomainPack.subject`
+ * is one declarative line naming whose interests are being served, and it was
+ * already reaching T1 triage for exactly this reason — it just never reached the
+ * planner, which is the stage that decides what gets read at all.
+ *
+ * It is a SENTENCE, not a persona, and the distinction is the one `packs/types.ts`
+ * already makes: a persona changes the voice and leaves the criteria unchanged,
+ * which is the specification failure that produces confident answers to the
+ * wrong question. Optional because a pack-less caller is a real case, and its
+ * absence restores exactly the previous behaviour — asserted by test.
+ */
+const subjectBlock = (subject: string | undefined): string =>
+  subject === undefined || subject.trim() === ''
+    ? ''
+    : [
+        '',
+        'WHO IS ASKING',
+        subject.trim(),
+        '',
+        'Queries serve THAT reader. A question about whether to run a campaign is',
+        'a question about the market they sell into — their competitors, their',
+        'customers, their prices, their season — and never about the policy of a',
+        'government that happens to share the topic.',
+      ].join('\n');
+
 export async function planSearches(
   question: string,
   history: readonly ConversationTurn[],
   ask: AskPort,
   maxQueries: number,
+  subject?: string,
 ): Promise<FollowUpPlan> {
   const conversational = history.length > 0;
   const reply = await ask.ask(
-    conversational ? PLAN_SYSTEM + FOLLOW_UP_RULES : PLAN_SYSTEM,
+    (conversational ? PLAN_SYSTEM + FOLLOW_UP_RULES : PLAN_SYSTEM) + subjectBlock(subject),
     conversational ? transcript(history, question) : question,
     conversational ? 900 : 700,
   );

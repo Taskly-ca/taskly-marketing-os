@@ -511,10 +511,17 @@ export function absorbSpans(
 
 /* ── the run ──────────────────────────────────────────────────────────────── */
 
+/** Threaded to every step's planner for the same reason the web path threads
+ *  it: a sub-question researched without a subject drifts to whoever else
+ *  writes about the topic. */
 export interface DeepDeps {
   /** Clarify, plan, per-step query planning, attribution, reflection and the
    *  related-question pass. Whole replies, parsed as JSON. */
   readonly ask: AskPort;
+  /** The pack's statement of whose interests this serves, threaded to every
+   *  step's planner. A sub-question researched without one drifts to whoever
+   *  else writes about the topic — see `subjectBlock` in follow-up.ts. */
+  readonly subject?: string;
   /** The final write only. One streamed call per run, at the end. */
   readonly askStream: AskStreamPort;
   readonly search: readonly SearchPort[];
@@ -716,7 +723,7 @@ export async function streamDeep(question: string, deps: DeepDeps): Promise<Deep
     // path). The original question is not in this prompt: re-injecting it is
     // the documented way a five-step plan becomes five searches for step one.
     status({ phase: 'searching', detail: `step ${step.n}: ${step.question}` });
-    const planned = await planSearches(step.question, [], deps.ask, limits.maxQueries);
+    const planned = await planSearches(step.question, [], deps.ask, limits.maxQueries, deps.subject);
     spent += planned.costCents;
     if (planned.note !== '') return { added: 0, detail: planned.note, costCents: spent };
     if (planned.queries.length === 0) {

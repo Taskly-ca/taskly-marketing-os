@@ -291,3 +291,56 @@ describe('relatedQuestions', () => {
       .toEqual({ related: [], costCents: 0 });
   });
 });
+
+describe('the planner is told whose interests it serves', () => {
+  /**
+   * Live, 2026-08-31. "Should we run a snow-removal campaign in Toronto this
+   * October?" planned four queries about municipal snow policy, read eight City
+   * of Toronto PDFs, and reported the winter-maintenance budget. The gate
+   * refused to pretend, correctly — but an honest answer to the wrong question
+   * is still the wrong answer, and no check downstream can recover from
+   * evidence that was never about the subject.
+   */
+  const SUBJECT =
+    'Taskly: a home-services task marketplace in the Greater Toronto Area.';
+
+  const spy = (): { ask: AskPort; system: () => string } => {
+    let seen = '';
+    return {
+      ask: {
+        async ask(system) {
+          seen = system;
+          return { text: JSON.stringify({ queries: ['x'] }), costCents: 0 };
+        },
+      },
+      system: () => seen,
+    };
+  };
+
+  it('puts the subject in front of the planner', async () => {
+    const s = spy();
+    await planSearches('Should we run a snow-removal campaign?', [], s.ask, 4, SUBJECT);
+    expect(s.system()).toContain('WHO IS ASKING');
+    expect(s.system()).toContain('task marketplace in the Greater Toronto Area');
+  });
+
+  it('names the exact drift it exists to prevent', async () => {
+    const s = spy();
+    await planSearches('q', [], s.ask, 4, SUBJECT);
+    // The instruction has to be specific. "Be relevant" is not a criterion; the
+    // government-policy case is the one that actually happened.
+    expect(s.system()).toMatch(/government/i);
+  });
+
+  it('changes NOTHING when no subject is supplied', async () => {
+    // A pack-less caller is a real case, and this is the regression that would
+    // otherwise be invisible: a prompt that quietly grew for everyone.
+    const withNone = spy();
+    await planSearches('q', [], withNone.ask, 4);
+    const withEmpty = spy();
+    await planSearches('q', [], withEmpty.ask, 4, '   ');
+    expect(withNone.system()).not.toContain('WHO IS ASKING');
+    expect(withEmpty.system()).toBe(withNone.system());
+  });
+})
+;
