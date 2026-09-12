@@ -8,8 +8,8 @@ service explicitly because `railway link` in this folder auto-selected
 
 | service | what it is | source | runs |
 |---|---|---|---|
-| `tmos-console` | the console, at <https://tmos-console-production.up.railway.app> | `railway up` from this laptop | always on; `/healthz` is the health check |
-| `tmos-worker` | one full pass, `pnpm --filter @tmos/worker run:pass` | `railway up` from this laptop | **cron `30 11 * * *` UTC** = 07:30 Toronto in daylight time |
+| `tmos-console` | the console, at <https://tmos-console-production.up.railway.app> | GitHub `Taskly-ca/taskly-marketing-os` @ `main`, deploy on push | always on; `/healthz` is the health check |
+| `tmos-worker` | one full pass, `pnpm --filter @tmos/worker run:pass` | same GitHub source | **cron `30 11 * * *` UTC** = 07:30 Toronto in daylight time |
 
 Both build with Railpack: `pnpm build && node scripts/fetch-brain.mjs`.
 
@@ -33,29 +33,45 @@ railway api 'mutation { serviceInstanceUpdate(serviceId: "68440eb0-070b-45e6-9a8
 ```
 The console's **Run full pass** button works on Railway regardless.
 
-## The brain files travel inside the upload
+## The brain files need a GitHub token at build time
 
 The worker refuses to run without `TASKLY_FACT_SHEET` and `TASKLY_BRAIN_SNAPSHOT`,
 and both live in the marketplace repo — which is **private**, so a build cannot
-fetch them anonymously. `scripts/railway-up.sh` builds them from the local
-checkout (`TASKLY_REPO_DIR`, default `~/Documents/Taskly`) into `brain/`
-(gitignored) and stages them into the upload; on Railway the env vars point at
-`/app/brain/…`. That means **the Brain on Railway is as fresh as the last
-`railway-up.sh`** — redeploy after Brain changes you want the verifier to see.
+fetch them anonymously. With the services building from GitHub,
+`scripts/fetch-brain.mjs` downloads `Taskly-ca/taskly.ca@main` as a tarball
+during the build using **`GITHUB_TOKEN`**, copies the FACT-SHEET and runs that
+repo's own `brain-snapshot.mjs`. The env vars point at `/app/brain/…`.
 
-If the services are ever switched to build from GitHub instead, set
-`GITHUB_TOKEN` (fine-grained, contents:read on `Taskly-ca/taskly.ca`) on both
-services and `fetch-brain.mjs` downloads the repo at build time instead.
+**Without `GITHUB_TOKEN` every GitHub-triggered build fails at that step, on
+purpose** — the last successful deployment keeps serving. Mint a fine-grained
+personal access token: GitHub → Settings → Developer settings → Fine-grained
+tokens → resource owner `Taskly-ca` → only `taskly.ca` → repository permission
+**Contents: Read-only** → no expiry longer than you are comfortable rotating.
+Then, on both services:
+
+```bash
+railway variable set GITHUB_TOKEN=github_pat_… --service tmos-console
+railway variable set GITHUB_TOKEN=github_pat_… --service tmos-worker
+```
+Setting the variable redeploys, and that redeploy is the first green build.
+The Brain on Railway is then as fresh as the marketplace `main` at the moment
+of the last push to TMOS `main`.
 
 ## Deploying
+
+**Push to `main`.** Both services rebuild and redeploy on every push.
+
+The laptop path still exists as the fallback — it ships `brain/` built from the
+local checkout (`TASKLY_REPO_DIR`, default `~/Documents/Taskly`) inside the
+upload, so it needs no token:
 
 ```bash
 scripts/railway-up.sh            # both services
 scripts/railway-up.sh console    # one of them
 ```
 It uploads exactly the tracked files plus `brain/` from a temp dir — never
-`.env`, never `node_modules`. Deploys are detached; follow with
-`railway logs -b --service tmos-console` (build) or `railway logs --service tmos-console`.
+`.env`, never `node_modules`. Note a `railway up` deployment is replaced by the
+next GitHub push. Follow a build with `railway logs -b --service tmos-console`.
 
 ## Variables
 
