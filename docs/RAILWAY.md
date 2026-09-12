@@ -67,6 +67,16 @@ console only `TMOS_CONSOLE_PASSWORD`. Database URLs keep the session-pooler host
 on port 5432. Change one with
 `railway variable set KEY=value --service tmos-worker` (redeploys unless `--skip-deploys`).
 
+## The database pauses itself when nothing runs
+
+The TMOS Supabase project (`hakstgvubyirdxchhatx`) is on the free tier and
+**auto-pauses after a week or so without traffic**. Paused, the session pooler
+answers `Tenant or user not found` — the same text as a wrong username, which is
+how the first Railway deploy (2026-09-13) looked like a credentials problem for
+twenty minutes. It had been paused since the last laptop run in August.
+Restore from the Supabase dashboard (or the Supabase MCP `restore_project`);
+it takes a few minutes. The daily cron is now also what keeps it awake.
+
 ## What is ephemeral
 
 `briefing.html` is written to the container's disk and is gone on the next
