@@ -7,13 +7,20 @@
  * cannot watch it run, and the page you read is always as old as the last time
  * someone remembered to run the worker.
  *
- * ── BOUND TO LOOPBACK, DELIBERATELY ────────────────────────────────────────
+ * ── LOOPBACK BY DEFAULT; THE NETWORK COSTS A PASSWORD ──────────────────────
  *
  * This process holds a database connection with write access and can spawn the
- * worker. It listens on 127.0.0.1 ONLY — never 0.0.0.0 — because a server that
- * runs passes and reads the world model is not something to expose to a café
- * network by accident. There is no auth, and that is only acceptable because
- * nothing outside this machine can reach it.
+ * worker. On a laptop it listens on 127.0.0.1 ONLY — never 0.0.0.0 — because a
+ * server that runs passes and reads the world model is not something to expose
+ * to a café network by accident, and with nothing off the machine able to reach
+ * it, no auth is acceptable.
+ *
+ * On Railway (2026-09-13) it has to be reachable, so the two are tied together
+ * in one place: the server binds 0.0.0.0 ONLY when `TMOS_CONSOLE_PASSWORD` is
+ * set, and every route except `/healthz` then demands that password over HTTP
+ * basic auth. There is no flag that exposes the console without a password —
+ * an operator cannot get one without the other. Railway terminates TLS, so the
+ * credential never crosses the wire in clear.
  *
  * ── IT DOES NOT SCHEDULE ANYTHING ──────────────────────────────────────────
  *
@@ -22,7 +29,7 @@
  * for whoever wants it back; nothing here starts a timer.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -255,9 +262,44 @@ async function threadRoute(
 const threadPath = (id: string, action: string | null): string =>
   action === null ? `/api/threads/${id}` : `/api/threads/${id}/${action}`;
 
+/**
+ * The password that permits leaving loopback. Empty means "laptop mode": bind
+ * 127.0.0.1 and ask nothing, exactly as before.
+ */
+const CONSOLE_PASSWORD = process.env['TMOS_CONSOLE_PASSWORD']?.trim() ?? '';
+
+/**
+ * HTTP basic auth against `TMOS_CONSOLE_PASSWORD`. The username is ignored —
+ * there is one operator. Compared in constant time so a wrong guess does not
+ * leak how wrong it was; the length check first is the one unavoidable leak,
+ * and the password is a random 40-character string, so it leaks nothing useful.
+ */
+function authorized(req: IncomingMessage): boolean {
+  if (!CONSOLE_PASSWORD) return true;
+  const header = req.headers.authorization ?? '';
+  if (!header.startsWith('Basic ')) return false;
+  const decoded = Buffer.from(header.slice('Basic '.length), 'base64').toString('utf8');
+  const supplied = Buffer.from(decoded.slice(decoded.indexOf(':') + 1), 'utf8');
+  const expected = Buffer.from(CONSOLE_PASSWORD, 'utf8');
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
+
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const path = url.pathname;
+
+  // Unauthenticated on purpose: the platform health check has no password and
+  // learns nothing here but "the process is up".
+  if (path === '/healthz') return text(res, 200, 'ok');
+
+  if (!authorized(req)) {
+    res.writeHead(401, {
+      'www-authenticate': 'Basic realm="TMOS console", charset="UTF-8"',
+      'content-type': 'text/plain; charset=utf-8',
+    });
+    res.end('password required');
+    return;
+  }
 
   if (path === '/' || path === '/index.html') {
     // The answer engine is the front door now. Read per request rather than at
@@ -393,9 +435,12 @@ const server = createServer((req, res) => {
   });
 });
 
-const PORT = Number(process.env['TMOS_CONSOLE_PORT'] ?? 4478);
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`\n  TMOS console → http://127.0.0.1:${PORT}\n`);
+/** Railway injects `PORT`; a laptop keeps the old 4478 unless told otherwise. */
+const PORT = Number(process.env['PORT'] ?? process.env['TMOS_CONSOLE_PORT'] ?? 4478);
+/** See the header: leaving loopback is permitted only with a password set. */
+const HOST = CONSOLE_PASSWORD ? '0.0.0.0' : '127.0.0.1';
+server.listen(PORT, HOST, () => {
+  console.log(`\n  TMOS console → http://${HOST}:${PORT}${CONSOLE_PASSWORD ? '  (password required)' : ''}\n`);
   console.log('  Nothing is scheduled. A pass runs when you press one.\n');
   /**
    * REBUILD THE DAY'S SPEND BEFORE THE FIRST QUESTION.

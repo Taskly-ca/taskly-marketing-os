@@ -59,6 +59,10 @@ For reference, that file is:
 30 7 * * * cd /srv/taskly-marketing-os && pnpm --filter @tmos/worker run:pass >> /var/log/tmos.log 2>&1
 ```
 
+## Railway (live since 2026-09-13)
+
+The `tmos-worker` service runs the pass on cron `30 11 * * *` UTC. `docs/RAILWAY.md`.
+
 ## A platform scheduler
 
 Railway/Render cron, or a GitHub Actions `schedule:` — the command is the same.

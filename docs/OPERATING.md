@@ -16,12 +16,17 @@ Then open **http://127.0.0.1:4478**. That is the app: press a stage, watch it
 run line by line, and read what it found. Everything below is the same thing
 from a terminal.
 
-**Nothing is scheduled.** A pass runs when you press one. `scripts/schedule.md`
-still documents launchd for whoever wants it back; nothing loads it for you.
+**On Railway since 2026-09-13** — the same console at
+<https://tmos-console-production.up.railway.app>, behind a password, with a
+daily pass scheduled at 07:30 Toronto. `docs/RAILWAY.md` has the how and the
+why, and how to turn the schedule off again. Deploy with `scripts/railway-up.sh`.
 
-The console binds to **127.0.0.1 only** — it holds a database connection and can
-spawn the worker, so it is not something to put on a network. There is no auth,
-and that is only acceptable because nothing off this machine can reach it.
+Locally, **nothing is scheduled.** A pass runs when you press one.
+`scripts/schedule.md` still documents launchd for whoever wants it back.
+
+The local console binds to **127.0.0.1 only** — it holds a database connection
+and can spawn the worker, so it is not something to put on a network. It leaves
+loopback only when `TMOS_CONSOLE_PASSWORD` is set, and then asks for it.
 
 ### What the buttons do
 
