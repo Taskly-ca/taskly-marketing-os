@@ -63,9 +63,9 @@ const token = process.env['GITHUB_TOKEN']?.trim();
 const repo = process.env['TASKLY_SOURCE_REPO'] ?? 'Taskly-ca/taskly.ca';
 const ref = process.env['TASKLY_SOURCE_REF'] ?? 'main';
 
-if (localRepo) {
-  buildFrom(resolve(localRepo), `TASKLY_REPO_DIR (${localRepo})`);
-} else if (token) {
+const shipped = existsSync(OUT_SHEET) && existsSync(OUT_SNAPSHOT);
+
+async function buildFromGitHub() {
   const url = `https://api.github.com/repos/${repo}/tarball/${ref}`;
   log(`downloading ${url}`);
   const res = await fetch(url, {
@@ -85,7 +85,22 @@ if (localRepo) {
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
-} else if (existsSync(OUT_SHEET) && existsSync(OUT_SNAPSHOT)) {
+}
+
+if (localRepo) {
+  buildFrom(resolve(localRepo), `TASKLY_REPO_DIR (${localRepo})`);
+} else if (token) {
+  try {
+    await buildFromGitHub();
+  } catch (err) {
+    // A token that cannot read the repo (wrong owner, org policy, expired) must
+    // not sink a build that already carries the files — that happened on
+    // 2026-09-13, when a personal-owner token 404'd the private repo while the
+    // upload had a perfectly good brain/ beside it. Keep the shipped copy, say so.
+    if (!shipped) throw err;
+    log(`GITHUB_TOKEN could not fetch the repo (${err instanceof Error ? err.message : err}) — keeping the brain/ files shipped with the upload`);
+  }
+} else if (shipped) {
   log('no TASKLY_REPO_DIR or GITHUB_TOKEN; brain/ already holds both files — keeping them');
 } else {
   throw new Error(
