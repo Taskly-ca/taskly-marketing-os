@@ -23,6 +23,7 @@ export function TopBar({ active, onToggleHistory, onNew, spend }: Props) {
       <Link href="/" className="brand"><Mark /><span>Marketing OS</span></Link>
       <nav className="tabs">
         <Link className="tab" href="/" aria-current={active === 'ask' ? 'page' : undefined}>Ask</Link>
+        <Link className="tab" href="/watch" aria-current={active === 'watch' ? 'page' : undefined}>Watch</Link>
       </nav>
       <div className="top-right">
         {spend && <span className="chip hide-sm num" title={`Daily ceiling $${spend.limit.toFixed(0)}`}>${spend.usd.toFixed(2)} today</span>}

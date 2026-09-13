@@ -117,7 +117,7 @@ export const newTurn = (question: string, mode: Mode, answers?: string[]): Turn 
 const KINDS = new Set(['web', 'world', 'brain', 'ledger']);
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', ndash: '–', mdash: '—', rsquo: '’', lsquo: '‘', rdquo: '”', ldquo: '“', hellip: '…' };
 /** Page titles arrive with HTML entities still in them (“&ndash;”); show the character. */
-const decode = (s: string) => s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) =>
+export const decode = (s: string) => s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) =>
   e[0] === '#' ? String.fromCodePoint(e[1]?.toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : Number(e.slice(1))) : ENTITIES[e.toLowerCase()] ?? m);
 const kindOf = (k: unknown): SourceKind => (typeof k === 'string' && KINDS.has(k) ? (k as SourceKind) : 'web');
 
