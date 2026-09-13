@@ -8,19 +8,20 @@ service explicitly because `railway link` in this folder auto-selected
 
 | service | what it is | source | runs |
 |---|---|---|---|
-| `tmos-console` | the console, at <https://tmos-console-production.up.railway.app> | `scripts/railway-up.sh` from this laptop (same model as Crack Studio) | always on; `/healthz` is the health check |
+| `tmos-console` | **the web app** (`apps/web`, public, sign-in page) **plus the console** (`apps/console`, loopback only), at <https://tmos-console-production.up.railway.app> | `scripts/railway-up.sh console` from this laptop | always on; `node scripts/start-railway.mjs`; `/healthz` checks both |
 | `tmos-worker` | one full pass, `pnpm --filter @tmos/worker run:pass` | same script | **cron `30 11 * * *` UTC** = 07:30 Toronto in daylight time |
 
 Both build with Railpack: `pnpm build && node scripts/fetch-brain.mjs`.
 
-## The console has a password now
+## Sign-in (since 2026-09-14)
 
-`TMOS_CONSOLE_PASSWORD` is set on `tmos-console` only. The server binds
-`0.0.0.0` **only** when that variable is set and then demands it as HTTP basic
-auth on every route except `/healthz`; unset, it is the loopback-only laptop
-console it always was. There is no way to expose it without a password. The
-browser asks once; any username. Read the value with
-`railway variable list --service tmos-console --kv | grep TMOS_CONSOLE_PASSWORD`.
+People sign in on the web app's own page — the Crack Studio sign-in, same look.
+Username `taskly` (`TMOS_CONSOLE_USERNAME`), password `TMOS_CONSOLE_PASSWORD`.
+The session is a signed cookie (30 days) keyed off that password, so **changing
+the password signs everyone out**. The console itself now binds 127.0.0.1
+(`TMOS_CONSOLE_BIND`) inside the container and is reachable only through the web
+app's `/api/console/*`, which checks the session and attaches the console
+password server-side. The old browser basic-auth prompt is gone.
 
 ## The cron reverses "nothing is scheduled"
 
