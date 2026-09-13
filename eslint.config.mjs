@@ -14,7 +14,7 @@ const nodeGlobals = {
 };
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/node_modules/**', '**/*.d.ts', 'supabase/**'] },
+  { ignores: ['**/dist/**', '**/node_modules/**', '**/*.d.ts', 'supabase/**', '**/.next/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

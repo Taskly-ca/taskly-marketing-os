@@ -6,3 +6,5 @@ packages:
 # script-blocked by default (supply-chain hygiene on a public-adjacent repo).
 allowBuilds:
   esbuild: true
+  # Next's optional image binary; nothing here uses next/image, so it stays unbuilt on purpose.
+  sharp: false

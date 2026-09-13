@@ -32,6 +32,16 @@
         "src/resolve.ts",
         "src/forecast.ts"
       ]
+    },
+    "apps/web": {
+      "entry": [
+        "app/**/{page,layout,route}.tsx",
+        "app/**/route.ts"
+      ],
+      "project": [
+        "**/*.{ts,tsx}"
+      ]
     }
-  }
+  },
+  "ignore": []
 }

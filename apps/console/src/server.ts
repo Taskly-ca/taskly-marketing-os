@@ -435,10 +435,14 @@ const server = createServer((req, res) => {
   });
 });
 
-/** Railway injects `PORT`; a laptop keeps the old 4478 unless told otherwise. */
-const PORT = Number(process.env['PORT'] ?? process.env['TMOS_CONSOLE_PORT'] ?? 4478);
-/** See the header: leaving loopback is permitted only with a password set. */
-const HOST = CONSOLE_PASSWORD ? '0.0.0.0' : '127.0.0.1';
+/** Railway injects `PORT`; a laptop keeps 4478. An empty value counts as unset. */
+const PORT = Number(process.env['PORT'] || process.env['TMOS_CONSOLE_PORT'] || 4478);
+/**
+ * See the header: leaving loopback is permitted only with a password set.
+ * `TMOS_CONSOLE_BIND=127.0.0.1` pins it to loopback even then — how the web
+ * app's container runs it, where the web app is the only public door.
+ */
+const HOST = process.env['TMOS_CONSOLE_BIND'] === '127.0.0.1' || !CONSOLE_PASSWORD ? '127.0.0.1' : '0.0.0.0';
 server.listen(PORT, HOST, () => {
   console.log(`\n  TMOS console → http://${HOST}:${PORT}${CONSOLE_PASSWORD ? '  (password required)' : ''}\n`);
   console.log('  Nothing is scheduled. A pass runs when you press one.\n');

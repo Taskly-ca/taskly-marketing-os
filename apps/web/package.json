@@ -1,0 +1,22 @@
+{
+  "name": "@tmos/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The TMOS front-end — the answer engine and the console behind one sign-in, in the Taskly look shared with Crack Studio.",
+  "scripts": {
+    "dev": "next dev --turbopack -p 4480",
+    "build": "next build",
+    "typecheck": "next typegen && tsc --noEmit",
+    "start": "next start -H 0.0.0.0 -p ${PORT:-4480}"
+  },
+  "dependencies": {
+    "next": "~16.2.12",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.3"
+  }
+}
