@@ -13,12 +13,12 @@ import { Composer, ModeIcon } from './composer';
 import { TurnView } from './turn-view';
 import { Activity } from './activity';
 
-type Props = { threads: ThreadSummary[]; thread: ThreadDetail | null; now: number; consoleDown: boolean; demo?: boolean; initialMode?: Mode };
+type Props = { threads: ThreadSummary[]; thread: ThreadDetail | null; now: number; consoleDown: boolean; demo?: boolean; initialMode?: Mode; initialQuestion?: string };
 
 const EVENTS = ['status', 'source', 'span', 'delta', 'sentence', 'done', 'error_msg', 'epilogue', 'unused', 'plan', 'step', 'reflect', 'clarify'];
 const MODE_KEY = 'tmos.mode';
 
-export function Ask({ threads: initialThreads, thread, now, consoleDown, demo = false, initialMode }: Props) {
+export function Ask({ threads: initialThreads, thread, now, consoleDown, demo = false, initialMode, initialQuestion }: Props) {
   const router = useRouter();
   const pathname = usePathname();
   const [threads, setThreads] = useState(initialThreads);
@@ -62,7 +62,7 @@ export function Ask({ threads: initialThreads, thread, now, consoleDown, demo = 
 
   useEffect(() => () => { es.current?.close(); clearTimers(); }, []);
 
-  useEffect(() => { if (demo && !thread) setDraft(DEMO_QUESTION[mode]); }, [demo, mode, thread]);
+  useEffect(() => { if (demo && !thread && !initialQuestion) setDraft(DEMO_QUESTION[mode]); }, [demo, mode, thread, initialQuestion]);
 
   // Commands from the ⌘K menu and keyboard shortcuts.
   useEffect(() => {
@@ -194,6 +194,17 @@ export function Ask({ threads: initialThreads, thread, now, consoleDown, demo = 
     if (window.location.pathname !== '/') router.push('/');
     setTimeout(() => document.getElementById('question')?.focus(), 50);
   };
+
+  // `/?q=…` asks straight away, as the old page did — a question can ride in a link or a bookmark.
+  const askedFromLink = useRef(false);
+  const askRef = useRef(ask);
+  askRef.current = ask;
+  useEffect(() => {
+    if (!initialQuestion || askedFromLink.current || thread) return;
+    askedFromLink.current = true;
+    window.history.replaceState(null, '', window.location.pathname + (demo ? `?demo=1&mode=${mode}` : ''));
+    askRef.current(initialQuestion);
+  }, [initialQuestion, thread, demo, mode]);
 
   const newQuestionRef = useRef(newQuestion);
   newQuestionRef.current = newQuestion;

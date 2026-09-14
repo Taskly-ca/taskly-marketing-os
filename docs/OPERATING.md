@@ -6,29 +6,43 @@ built and why; this says what to type.
 
 ---
 
-## Start here — the console
+## Start here — the app
+
+**Live:** <https://tmos-console-production.up.railway.app> — sign in as `taskly`
+with `TMOS_CONSOLE_PASSWORD`. A daily pass runs there at 07:30 Toronto;
+`docs/RAILWAY.md` has the how, the why, and how to turn the schedule off.
+
+**Locally:**
 
 ```bash
-pnpm console
+pnpm console        # builds everything, then runs the API + the app
 ```
 
-Then open **http://127.0.0.1:4478**. That is the app: press a stage, watch it
-run line by line, and read what it found. Everything below is the same thing
-from a terminal.
+Then open **http://127.0.0.1:4480** and sign in (set `TMOS_CONSOLE_PASSWORD` in
+`.env` first — 12+ characters; the username is `taskly`). Locally, **nothing is
+scheduled**: a pass runs when you press one. `scripts/schedule.md` still
+documents launchd for whoever wants it back.
 
-**On Railway since 2026-09-13** — the same console at
-<https://tmos-console-production.up.railway.app>, behind a password, with a
-daily pass scheduled at 07:30 Toronto. `docs/RAILWAY.md` has the how and the
-why, and how to turn the schedule off again. Deploy with `scripts/railway-up.sh`.
+Two tabs:
 
-Locally, **nothing is scheduled.** A pass runs when you press one.
-`scripts/schedule.md` still documents launchd for whoever wants it back.
+- **Ask** — any question, answered with the sentence each figure came from.
+  Threads on the left (search, rename, archive, delete), the answer in the
+  middle, and the **Activity** panel on the right showing every step the run
+  takes as it takes it. Modes: Web · Grounded · Verified · Deep.
+- **Watch** — the dashboard: This week · Research · What changed · Competitors ·
+  Forecasts · Sources, with the run panel and its live log on the right.
 
-The local console binds to **127.0.0.1 only** — it holds a database connection
-and can spawn the worker, so it is not something to put on a network. It leaves
-loopback only when `TMOS_CONSOLE_PASSWORD` is set, and then asks for it.
+`⌘K` jumps to any thread, section, mode, theme or demo; `/` puts the cursor in
+the question box; `?` lists the shortcuts. `/?demo=1&mode=deep` replays a
+scripted run with no server and no spend.
 
-### What the buttons do
+The API itself (`apps/console`) binds **127.0.0.1 only** — it holds a database
+connection and can spawn the worker. The app is the only door to it.
+
+The old pages (`app.html` at `/`, `ui.html` at `/classic`) were deleted on
+2026-09-14 once every surface had a home in the app.
+
+### What the run buttons do (Watch → Run a pass)
 
 | button | what runs |
 |---|---|
@@ -43,12 +57,17 @@ A second run is **refused** while one is in flight, on purpose: two interleaved
 passes can make the second read the first's write and classify a genuine
 competitor change as already-seen — losing it silently, while looking healthy.
 
-### The tabs
+### The Watch sections
 
+- **This week** — a drafted plan, each recommendation with its evidence and what would prove it wrong.
+- **Research** — a one-off sourced answer (not saved; Ask keeps threads).
 - **What changed** — findings, withdrawn ones included and struck through.
-- **Competitors** — every measure on record, with the page it came from.
+- **Competitors** — every measure on record, with the quote and the page it came from.
 - **Forecasts** — the open ledger, plus the form to write your own.
 - **Sources** — what is feeding it and what is failing.
+
+Run a single stage lists all eight stages the runner accepts, including
+`brain`, `resolve` and `digest`, which the old page had no buttons for.
 
 ---
 

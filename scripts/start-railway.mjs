@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
- * ONE RAILWAY SERVICE, TWO PROCESSES — the console on loopback, the web app on the public port.
+ * ONE SERVICE, TWO PROCESSES — the console on loopback, the web app on the public port.
+ *
+ * Railway runs this directly; `pnpm console` runs it on a laptop with `.env`
+ * loaded (set TMOS_CONSOLE_PASSWORD there — it is the sign-in password).
  *
  * The console (apps/console) holds a write connection to the database and can
  * spawn paid runs, so it never listens on a public interface here: it is
@@ -32,7 +35,7 @@ function run(name, cwd, args, env) {
 }
 
 // The console must not see Railway's PORT, or it would try to bind the public port.
-const { PORT: publicPort = '8080', ...rest } = process.env;
+const { PORT: publicPort = '4480', ...rest } = process.env;
 run('console', resolve(ROOT, 'apps/console'), ['dist/server.js'], { ...rest, PORT: '', TMOS_CONSOLE_PORT: CONSOLE_PORT, TMOS_CONSOLE_BIND: '127.0.0.1' });
 run('web', resolve(ROOT, 'apps/web'), [resolve(ROOT, 'apps/web/node_modules/next/dist/bin/next'), 'start', '-H', '0.0.0.0', '-p', publicPort], {
   TMOS_CONSOLE_URL: `http://127.0.0.1:${CONSOLE_PORT}`,
