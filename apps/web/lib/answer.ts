@@ -275,6 +275,7 @@ const PHASE_LABEL_GROUNDED: Partial<Record<Phase, string>> = {
   planning: 'Planning what to look up', searching: 'Searching our own records', reading: 'Reading our own records', attributing: 'Finding quotable passages',
 };
 export const phaseLabel = (turn: Turn, phase: Phase) =>
+  (turn.mode === 'deep' && phase === 'planning' ? 'Planning the research' : undefined) ??
   (turn.mode === 'grounded' && turn.sources.some(s => s.kind !== 'web') ? PHASE_LABEL_GROUNDED[phase] : undefined) ?? PHASE_LABEL[phase];
 
 export const safeUrl = (u: string) => { try { const x = new URL(u); return x.protocol === 'http:' || x.protocol === 'https:' ? x.href : null; } catch { return null; } };

@@ -99,7 +99,7 @@ function DeepPlan({ turn, settled, proved }: { turn: Turn; settled: number; prov
     <section className="act-sec">
       <div className="act-sec-head"><span className="lab">Research plan</span>{turn.planRevisions > 0 && <span className="tag">revised {turn.planRevisions}×</span>}</div>
       {plan.length === 0 ? (
-        <p className="muted">{turn.live ? 'Working out the sub-questions. Nothing has been searched yet.' : turn.stored ? 'Plans aren’t saved with an answer. Ask again to watch the plan live.' : 'This run published no plan.'}</p>
+        <p className="muted">{turn.live ? 'Working out the sub-questions. Nothing has been searched yet.' : turn.clarify ? 'No plan yet — it asked you to clarify first, and nothing has been searched.' : turn.stored ? 'Plans aren’t saved with an answer. Ask again to watch the plan live.' : 'This run published no plan.'}</p>
       ) : (
         <ol className="plan">
           {plan.map(s => <PlanRow key={s.n} s={s} />)}

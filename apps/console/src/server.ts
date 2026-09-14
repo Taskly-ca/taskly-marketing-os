@@ -52,7 +52,8 @@ import { readState } from './queries.js';
 import { runResearch } from './research-route.js';
 import { runDraft } from './draft-route.js';
 import { parseClarifications, parseMode, runAnswer } from './answer-route.js';
-import { primeBudget } from './budget-boot.js';
+import { primeBudget, readCommittedSpendCents } from './budget-boot.js';
+import { loadEnv, utcDay } from '@tmos/shared';
 import { Runner, RunBusy, isStage } from './runner.js';
 
 /** dist/ sits one level under the app, so the repo root is three up. */
@@ -348,6 +349,27 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         };
       }),
     );
+  }
+
+  if (path === '/api/spend') {
+    /**
+     * TODAY'S SPEND, READ FRESH — for the chip in the web app's top bar.
+     *
+     * Straight from `ai_usage_log`, not from this process's in-memory ledger:
+     * the worker's cron pass spends in a different process, and a chip that
+     * only counted answers asked through this console would under-report the
+     * day by exactly the part nobody watched. `utc_day` is the ceiling's day,
+     * so the chip and the refusal agree on when "today" started.
+     */
+    const now = new Date();
+    const env = loadEnv();
+    const day = utcDay(now);
+    return json(res, 200, {
+      day,
+      spentCents: await readCommittedSpendCents(day),
+      limitCents: env.TMOS_MAX_DAILY_COST_CENTS,
+      killswitch: env.TMOS_KILLSWITCH,
+    });
   }
 
   if (path === '/api/status') {

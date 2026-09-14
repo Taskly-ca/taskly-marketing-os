@@ -53,7 +53,7 @@ import {
  * leaving node-postgres's numeric-as-string to be added to a number somewhere
  * downstream and produce '0' + 5 = '05'.
  */
-async function readCommittedSpendCents(day: string, ex: Executor = db()): Promise<number> {
+export async function readCommittedSpendCents(day: string, ex: Executor = db()): Promise<number> {
   const row = await ex.one<{ cents: string | number }>(sql`
     select coalesce(sum(cost_cents), 0)::bigint as cents
       from ai_usage_log

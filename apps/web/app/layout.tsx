@@ -16,11 +16,16 @@ export const viewport: Viewport = {
     { media: '(prefers-color-scheme: light)', color: '#FAFAFA' },
     { media: '(prefers-color-scheme: dark)', color: '#121211' },
   ],
+  colorScheme: 'light dark',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${manrope.variable} ${jakarta.variable}`}>
+    <html lang="en" className={`${manrope.variable} ${jakarta.variable}`} suppressHydrationWarning>
+      <head>
+        {/* Before first paint, so a chosen theme never flashes the other one. Storage can throw in a private window. */}
+        <script dangerouslySetInnerHTML={{ __html: `try{var t=localStorage.getItem('tmos.theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}` }} />
+      </head>
       <body>{children}</body>
     </html>
   );

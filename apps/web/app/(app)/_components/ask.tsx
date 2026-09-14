@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { MODES, SUGGESTED, newTurn, reduce, replay, type Frame, type Mode, type ThreadDetail, type Turn } from '@/lib/answer';
+import { DEMO_QUESTION, demoScript } from '@/lib/demo';
 import type { ThreadSummary } from '@/lib/threads';
 import { ResizeHandle, usePanelWidth, useStoredFlag } from '@/components/resizable';
 import { Mark } from '@/components/mark';
@@ -12,19 +13,21 @@ import { Composer, ModeIcon } from './composer';
 import { TurnView } from './turn-view';
 import { Activity } from './activity';
 
-type Props = { threads: ThreadSummary[]; thread: ThreadDetail | null; now: number; consoleDown: boolean };
+type Props = { threads: ThreadSummary[]; thread: ThreadDetail | null; now: number; consoleDown: boolean; demo?: boolean; initialMode?: Mode };
 
 const EVENTS = ['status', 'source', 'span', 'delta', 'sentence', 'done', 'error_msg', 'epilogue', 'unused', 'plan', 'step', 'reflect', 'clarify'];
 const MODE_KEY = 'tmos.mode';
 
-export function Ask({ threads: initialThreads, thread, now, consoleDown }: Props) {
+export function Ask({ threads: initialThreads, thread, now, consoleDown, demo = false, initialMode }: Props) {
   const router = useRouter();
   const pathname = usePathname();
   const [threads, setThreads] = useState(initialThreads);
   const [threadId, setThreadId] = useState<string | null>(thread?.id ?? null);
   const [turns, setTurns] = useState<Turn[]>(() => (thread ? replay(thread) : []));
+  const turnsRef = useRef(turns);
+  turnsRef.current = turns;
   const [selected, setSelected] = useState<string | null>(null);
-  const [mode, setModeState] = useState<Mode>('web');
+  const [mode, setModeState] = useState<Mode>(initialMode ?? 'web');
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(consoleDown ? 'The research engine isn’t reachable right now. Threads and answers will load once it is back.' : null);
   const [toast, setToast] = useState<string | null>(null);
@@ -34,13 +37,15 @@ export function Ask({ threads: initialThreads, thread, now, consoleDown }: Props
   const historyW = usePanelWidth('tmos.width.history', 260, 200, 420);
   const activityW = usePanelWidth('tmos.width.activity', 380, 300, 640);
   const es = useRef<EventSource | null>(null);
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const clearTimers = () => { for (const t of timers.current) clearTimeout(t); timers.current = []; };
   const liveKey = useRef<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   // A saved thread opens at the top so it reads from the question down; a live answer follows the cursor.
   const pinned = useRef(!thread);
 
   // Mode is a per-browser preference, read after mount so the first paint matches the server.
-  useEffect(() => { try { const m = window.localStorage.getItem(MODE_KEY) as Mode | null; if (m && m in MODES) setModeState(m); } catch { /* private mode */ } }, []);
+  useEffect(() => { if (initialMode) return; try { const m = window.localStorage.getItem(MODE_KEY) as Mode | null; if (m && m in MODES) setModeState(m); } catch { /* private mode */ } }, [initialMode]);
   const setMode = (m: Mode) => { setModeState(m); try { window.localStorage.setItem(MODE_KEY, m); } catch { /* private mode */ } };
 
   // A different thread in the URL means a different conversation: stop anything live and load it.
@@ -55,7 +60,18 @@ export function Ask({ threads: initialThreads, thread, now, consoleDown }: Props
     scroller.current?.scrollTo({ top: 0 });
   }, [thread?.id]);
 
-  useEffect(() => () => es.current?.close(), []);
+  useEffect(() => () => { es.current?.close(); clearTimers(); }, []);
+
+  useEffect(() => { if (demo && !thread) setDraft(DEMO_QUESTION[mode]); }, [demo, mode, thread]);
+
+  // Commands from the ⌘K menu and keyboard shortcuts.
+  useEffect(() => {
+    const onMode = (e: Event) => setMode((e as CustomEvent<Mode>).detail);
+    const onNew = () => newQuestionRef.current();
+    window.addEventListener('tmos:mode', onMode);
+    window.addEventListener('tmos:new', onNew);
+    return () => { window.removeEventListener('tmos:mode', onMode); window.removeEventListener('tmos:new', onNew); };
+  }, []);
 
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 2200); return () => clearTimeout(t); }, [toast]);
 
@@ -75,6 +91,19 @@ export function Ask({ threads: initialThreads, thread, now, consoleDown }: Props
 
   const run = useCallback((turn: Turn, continueThread: string | null) => {
     es.current?.close();
+    if (demo) {
+      // A scripted replay: the same frames and the same reducer as a live run, on a clock. Nothing is saved.
+      clearTimers();
+      liveKey.current = turn.key;
+      const firstTurn = !continueThread && !turnsRef.current.some(t => t.key !== turn.key && !t.stored && t.doneAt);
+      for (const { at, frame } of demoScript(turn.mode, { firstTurn, answered: !!turn.answers })) {
+        timers.current.push(setTimeout(() => {
+          update(turn.key, t => (t.stopped ? t : reduce(t, frame)));
+          if (frame.event === 'done' || frame.event === 'clarify') liveKey.current = null;
+        }, at));
+      }
+      return;
+    }
     const params = new URLSearchParams({ q: turn.question, mode: turn.mode });
     if (continueThread) params.set('thread', continueThread);
     for (const a of turn.answers ?? []) params.append('a', a.slice(0, 500));
@@ -99,6 +128,7 @@ export function Ask({ threads: initialThreads, thread, now, consoleDown }: Props
             if (!pathname.startsWith(`/t/${d.threadId}`)) window.history.replaceState(null, '', `/t/${d.threadId}`);
           }
           void refreshThreads();
+          window.dispatchEvent(new Event('tmos:spent'));
         }
         if (name === 'error_msg' || name === 'clarify') { ended = true; source.close(); es.current = null; liveKey.current = null; void refreshThreads(); }
       });
@@ -111,7 +141,7 @@ export function Ask({ threads: initialThreads, thread, now, consoleDown }: Props
         data: frames === 0 ? 'Couldn’t reach the research engine. Check that it is running, then ask again.' : 'The connection dropped mid-answer. Everything above arrived; the rest did not.',
       }) : t));
     };
-  }, [pathname, refreshThreads, update]);
+  }, [demo, pathname, refreshThreads, update]);
 
   const ask = useCallback((question: string, askMode: Mode = mode) => {
     const q = question.trim();
@@ -137,7 +167,7 @@ export function Ask({ threads: initialThreads, thread, now, consoleDown }: Props
   const stop = () => {
     const key = liveKey.current;
     if (!key) return;
-    es.current?.close(); es.current = null; liveKey.current = null;
+    es.current?.close(); es.current = null; liveKey.current = null; clearTimers();
     update(key, t => ({ ...t, live: false, stopped: true, doneAt: Date.now() }));
     setToast('Stopped — nothing more will be shown for this run');
   };
@@ -159,11 +189,14 @@ export function Ask({ threads: initialThreads, thread, now, consoleDown }: Props
   };
 
   const newQuestion = () => {
-    es.current?.close(); es.current = null; liveKey.current = null;
+    es.current?.close(); es.current = null; liveKey.current = null; clearTimers();
     setTurns([]); setThreadId(null); setSelected(null); setError(null); setPane('answer');
     if (window.location.pathname !== '/') router.push('/');
     setTimeout(() => document.getElementById('question')?.focus(), 50);
   };
+
+  const newQuestionRef = useRef(newQuestion);
+  newQuestionRef.current = newQuestion;
 
   const running = !!turns.find(t => t.live);
   const activeTurn = turns.find(t => t.key === selected) ?? turns.findLast(t => !t.stored) ?? turns.at(-1) ?? null;
@@ -184,6 +217,13 @@ export function Ask({ threads: initialThreads, thread, now, consoleDown }: Props
         {historyOpen && <div className="scrim only-narrow" onClick={() => setHistoryOpen(false)} />}
 
         <section className="convo" aria-label="Conversation">
+          {demo && (
+            <div className="demo-bar" role="status">
+              <span className="tag">Demo</span>
+              <span>Scripted events — no server, no spend, nothing saved.{mode === 'deep' ? ' Deep timings compressed about 5:1.' : ''}</span>
+              <button className="link" onClick={() => { window.location.href = '/'; }}>Leave demo</button>
+            </div>
+          )}
           <div className="convo-scroll" ref={scroller} onScroll={onScroll}>
             {empty ? (
               <div className="hero">
