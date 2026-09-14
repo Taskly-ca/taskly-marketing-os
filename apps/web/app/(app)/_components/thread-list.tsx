@@ -32,6 +32,9 @@ export function ThreadList({ threads, activeId, now, open, collapsed, onCollapse
   const [showArchived, setShowArchived] = useState(false);
   const [archived, setArchived] = useState<ThreadSummary[] | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
+  // Where the open menu sits, in viewport coordinates. The list scrolls and clips its children,
+  // so the menu is position: fixed and placed from the button — flipped upward near the bottom.
+  const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
   const [armed, setArmed] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,10 +48,32 @@ export function ThreadList({ threads, activeId, now, open, collapsed, onCollapse
     if (!menu) return;
     const close = (e: MouseEvent) => { if (!(e.target as HTMLElement).closest('.hist-menu, .hist .more')) { setMenu(null); setArmed(null); } };
     const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') { setMenu(null); setArmed(null); } };
+    // A fixed menu must follow its row when the list scrolls or the window resizes.
+    const follow = () => { if (anchor.current) place(anchor.current); };
     document.addEventListener('mousedown', close);
     document.addEventListener('keydown', esc);
-    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc); };
+    window.addEventListener('resize', follow);
+    document.addEventListener('scroll', follow, true);
+    return () => {
+      document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc);
+      window.removeEventListener('resize', follow); document.removeEventListener('scroll', follow, true);
+    };
   }, [menu]);
+
+  const anchor = useRef<HTMLElement | null>(null);
+  const place = (button: HTMLElement) => {
+    const r = button.getBoundingClientRect();
+    const MENU_H = 140;
+    const right = Math.max(8, window.innerWidth - r.right);
+    setMenuPos(window.innerHeight - r.bottom < MENU_H + 12 ? { bottom: window.innerHeight - r.top + 4, right } : { top: r.bottom + 4, right });
+  };
+  const openMenu = (id: string, button: HTMLElement) => {
+    if (menu === id) { setMenu(null); setArmed(null); anchor.current = null; return; }
+    anchor.current = button;
+    place(button);
+    setMenu(id); setArmed(null);
+  };
+
 
   const source = showArchived ? archived ?? [] : threads;
   const filtered = useMemo(() => {
@@ -129,12 +154,12 @@ export function ThreadList({ threads, activeId, now, open, collapsed, onCollapse
                   </Link>
                 )}
                 {renaming !== t.id && (
-                  <button className="icon-btn more" onClick={() => { setMenu(menu === t.id ? null : t.id); setArmed(null); }} aria-label={`Actions for ${t.title}`} aria-expanded={menu === t.id}>
+                  <button className="icon-btn more" onClick={e => openMenu(t.id, e.currentTarget)} aria-label={`Actions for ${t.title}`} aria-expanded={menu === t.id}>
                     <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg>
                   </button>
                 )}
                 {menu === t.id && (
-                  <div className="hist-menu" role="menu">
+                  <div className="hist-menu" role="menu" style={menuPos ?? undefined}>
                     {!showArchived && <button role="menuitem" onClick={() => { setRenaming(t.id); setMenu(null); }}>Rename</button>}
                     {showArchived
                       ? <button role="menuitem" onClick={() => archive(t, false)}>Restore</button>

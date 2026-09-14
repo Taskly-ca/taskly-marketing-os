@@ -548,7 +548,7 @@ code { font: 500 .92em var(--mono); background: var(--wash); padding: 1px 5px; b
 .hist .more { opacity: 0; width: 28px; height: 28px; margin-right: 4px; }
 .hist .more svg { width: 15px; height: 15px; }
 .hist:hover .more, .hist:focus-within .more, .hist[data-menu="true"] .more { opacity: 1; }
-.hist-menu { position: absolute; right: 6px; top: calc(100% - 4px); z-index: 30; min-width: 170px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 5px; display: grid; }
+.hist-menu { position: fixed; z-index: 60; min-width: 170px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 5px; display: grid; }
 .hist-menu button { text-align: left; padding: 8px 10px; border-radius: 8px; font-size: 13px; color: var(--ink); }
 .hist-menu button:hover { background: var(--hover); }
 .hist-menu .danger { color: var(--bad); }
